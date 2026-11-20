@@ -30,6 +30,7 @@ const limitStatus = document.querySelector('#limit-status');
 const soilLimitLabel = document.querySelector('#soil-limit-label');
 const settingKeys = Object.keys(DEFAULT_LIMITS);
 const cameraKeys = new Set();
+const VIEW_REFERENCE_ZOOM = 5;
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
@@ -343,8 +344,8 @@ pause.addEventListener('click', () => {
 });
 function sizeView() {
     const maxHeight = parseFloat(getComputedStyle(viewport).maxHeight);
-    const width = Math.max(1, Math.min(viewport.clientWidth, WIDTH * camera.zoom));
-    const height = Math.max(1, Math.floor(Math.min(maxHeight, HEIGHT * camera.zoom)));
+    const width = Math.max(1, Math.min(viewport.clientWidth, WIDTH * VIEW_REFERENCE_ZOOM));
+    const height = Math.max(1, Math.floor(Math.min(maxHeight, HEIGHT * VIEW_REFERENCE_ZOOM)));
     if (field.width !== width) field.width = width;
     if (field.height !== height) field.height = height;
     screen.imageSmoothingEnabled = false;
@@ -358,10 +359,7 @@ function setZoom(value, anchorX, anchorY) {
     zoom.value = String(camera.zoom);
     zoomOut.disabled = camera.zoom === 1;
     zoomIn.disabled = camera.zoom === 10;
-    sizeView();
-    const newX = Math.min(anchorX ?? field.width / 2, field.width);
-    const newY = Math.min(anchorY ?? field.height / 2, field.height);
-    moveCamera(oldX / previousZoom - newX / camera.zoom, oldY / previousZoom - newY / camera.zoom);
+    moveCamera(oldX * (1 / previousZoom - 1 / camera.zoom), oldY * (1 / previousZoom - 1 / camera.zoom));
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
@@ -374,6 +372,7 @@ field.addEventListener('wheel', event => {
     setZoom(Number(zoom.value) - Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
     hovered = indexAt(event);
 }, { passive: false });
+sizeView();
 const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
 new ResizeObserver(sizeView).observe(viewport);
