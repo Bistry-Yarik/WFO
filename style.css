@@ -27,7 +27,7 @@ button:disabled { opacity: .5; cursor: default; }
 .touch-hint { display: none; }
 button:hover, select:hover { background: #314b3d; }
 #startup { margin: 0; padding: 12px; color: #f1d5a6; }
-.viewport { overflow: hidden; max-height: 72vh; background: #101d18; }
+.viewport { overflow: hidden; height: 72vh; height: 72dvh; background: #101d18; }
 canvas { touch-action: none; display: block; cursor: crosshair; image-rendering: pixelated; }
 aside { display: grid; gap: 12px; align-content: start; }
 aside section { padding: 15px; }
@@ -58,7 +58,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
     .zoom-controls button { min-width: 44px; }
     .desktop-hint { display: none; }
     .touch-hint { display: inline; }
-    .viewport { max-height: 58vh; }
+    .viewport { height: 58vh; height: 58dvh; }
 }
 
 .settings { padding: 15px; }

@@ -30,7 +30,6 @@ const limitStatus = document.querySelector('#limit-status');
 const soilLimitLabel = document.querySelector('#soil-limit-label');
 const settingKeys = Object.keys(DEFAULT_LIMITS);
 const cameraKeys = new Set();
-const VIEW_REFERENCE_ZOOM = 5;
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
@@ -343,9 +342,8 @@ pause.addEventListener('click', () => {
     pause.textContent = paused ? 'Продолжить' : 'Пауза';
 });
 function sizeView() {
-    const maxHeight = parseFloat(getComputedStyle(viewport).maxHeight);
-    const width = Math.max(1, Math.min(viewport.clientWidth, WIDTH * VIEW_REFERENCE_ZOOM));
-    const height = Math.max(1, Math.floor(Math.min(maxHeight, HEIGHT * VIEW_REFERENCE_ZOOM)));
+    const width = Math.max(1, viewport.clientWidth);
+    const height = Math.max(1, viewport.clientHeight);
     if (field.width !== width) field.width = width;
     if (field.height !== height) field.height = height;
     screen.imageSmoothingEnabled = false;
