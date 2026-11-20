@@ -8,9 +8,6 @@ const scale = 10;
 const terrain = document.createElement('canvas');
 const terrainContext = terrain.getContext('2d');
 let terrainPixels;
-const overview = document.createElement('canvas');
-const overviewContext = overview.getContext('2d');
-let overviewPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
@@ -39,6 +36,14 @@ const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
+const OVERVIEW_MAX_ZOOM = 2;
+const overviewColors = {
+    chlorophyll: [101, 229, 146],
+    organic: [246, 107, 119],
+    energy: [105, 179, 255],
+    converter: [197, 138, 255],
+    teeth: [165, 43, 58]
+};
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
@@ -75,7 +80,7 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6;
+        context.lineWidth = Math.max(scale / camera.zoom, 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
         context.lineCap = 'round';
         context.beginPath();
         simulation.neighbors(cell.index).forEach((index, direction) => {
@@ -95,7 +100,7 @@ function drawCell(cell) {
         });
         context.stroke();
         context.beginPath();
-        context.arc(x, y, Math.max(1.5, context.lineWidth / 2), 0, Math.PI * 2);
+        context.arc(x, y, Math.max(scale * 1.1 / camera.zoom, context.lineWidth / 2), 0, Math.PI * 2);
         context.fill();
     } else if (cell.type === 'seed') {
         context.beginPath();
@@ -186,64 +191,29 @@ function mapViewRect() {
 }
 
 function drawOverview() {
-    const { width, height, cells } = simulation;
-    const columns = Math.ceil(width * Math.min(1, camera.zoom));
-    const rows = Math.ceil(height * Math.min(1, camera.zoom));
-    if (!overviewPixels || overview.width !== columns || overview.height !== rows) {
-        overview.width = columns;
-        overview.height = rows;
-        overviewPixels = overviewContext.createImageData(columns, rows);
-    }
-
-    const source = terrainPixels.data;
-    const result = overviewPixels.data;
+    const pixels = terrainPixels.data;
     const palette = new Map();
-    for (const [index, cell] of cells) {
-        const hue = cell.colony.hue;
-        if (!palette.has(hue)) {
-            const component = (n) => {
-                const k = (n + hue / 30) % 12;
-                return 255 * (0.7 - 0.24 * Math.max(-1, Math.min(k - 3, 9 - k, 1)));
-            };
-            palette.set(hue, [component(0), component(8), component(4)]);
-        }
-        const [red, green, blue] = palette.get(hue);
-        const offset = index * 4;
-        source[offset] = red;
-        source[offset + 1] = green;
-        source[offset + 2] = blue;
-    }
-    for (let row = 0; row < rows; row++) {
-        const top = Math.floor(row * height / rows);
-        const bottom = Math.floor((row + 1) * height / rows);
-        for (let column = 0; column < columns; column++) {
-            const left = Math.floor(column * width / columns);
-            const right = Math.floor((column + 1) * width / columns);
-            let red = 0;
-            let green = 0;
-            let blue = 0;
-            for (let y = top; y < bottom; y++) {
-                for (let x = left; x < right; x++) {
-                    const offset = (y * width + x) * 4;
-                    red += source[offset];
-                    green += source[offset + 1];
-                    blue += source[offset + 2];
-                }
+    for (const [index, cell] of simulation.cells) {
+        let color = overviewColors[cell.type];
+        if (!color) {
+            const hue = cell.colony.hue;
+            if (!palette.has(hue)) {
+                const component = n => {
+                    const k = (n + hue / 30) % 12;
+                    return 255 * (0.7 - 0.24 * Math.max(-1, Math.min(k - 3, 9 - k, 1)));
+                };
+                palette.set(hue, [component(0), component(8), component(4)]);
             }
-            const count = (right - left) * (bottom - top);
-            const offset = (row * columns + column) * 4;
-            result[offset] = red / count;
-            result[offset + 1] = green / count;
-            result[offset + 2] = blue / count;
-            result[offset + 3] = 255;
+            color = palette.get(hue);
         }
+        pixels.set(color, index * 4);
     }
-    overviewContext.putImageData(overviewPixels, 0, 0);
-    overviewContext.save();
-    overviewContext.scale(columns / worldCanvas.width, rows / worldCanvas.height);
-    drawEffects(overviewContext);
-    overviewContext.restore();
-    return overview;
+    terrainContext.putImageData(terrainPixels, 0, 0);
+    terrainContext.save();
+    terrainContext.scale(1 / scale, 1 / scale);
+    drawEffects(terrainContext);
+    terrainContext.restore();
+    return terrain;
 }
 
 function draw() {
@@ -254,7 +224,7 @@ function draw() {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = camera.zoom >= 2 && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = camera.zoom > OVERVIEW_MAX_ZOOM && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -262,7 +232,7 @@ function draw() {
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 3] = 255;
     }
-    const tile = camera.zoom < 2 ? drawOverview() : drawDetailedWorld();
+    const tile = camera.zoom <= OVERVIEW_MAX_ZOOM ? drawOverview() : drawDetailedWorld();
     const view = mapViewRect();
     screen.fillStyle = '#101d18';
     screen.fillRect(0, 0, field.width, field.height);
