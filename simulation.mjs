@@ -9,7 +9,11 @@ const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
 const SEED_ORGANIC_DIVISOR = 3;
-const CONVERSION_RATE = 50;
+const CONVERSION_RATE = 150;
+const DAY_LENGTH = 450;
+const CYCLE_LENGTH = 600;
+const SLOW_DIFFUSION_TICKS = 5;
+const DIFFUSION_RATES = { energy: 0.06, organic: 0.0002, radiation: 0.02 };
 const BITE_RATE = 50;
 const SEED_COST = 300;
 const THROWN_SEED_COST = 900;
@@ -29,6 +33,11 @@ export class Simulation {
         this.energy = new Float64Array(WIDTH * HEIGHT);
         this.radiation = new Float64Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
+        this.diffusionBuffers = {
+            energy: new Float64Array(this.energy.length),
+            organic: new Float64Array(this.energy.length),
+            radiation: new Float64Array(this.energy.length)
+        };
         this.time = 0;
         this.totalSeeds = 0;
         this.mutations = 0;
@@ -36,7 +45,7 @@ export class Simulation {
     }
 
     get daylight() {
-        return this.time % 60 < 45;
+        return this.time % CYCLE_LENGTH < DAY_LENGTH;
     }
 
     seed(x, y, parent = null, reserve = parent ? SEED_COST : 1350) {
@@ -107,21 +116,37 @@ export class Simulation {
         }
     }
 
-    diffuse(ground, rate) {
-        const next = new Float64Array(ground.length);
+    diffuse(resource, duration) {
+        const ground = this[resource];
+        const next = this.diffusionBuffers[resource];
+        const fraction = DIFFUSION_RATES[resource] * duration;
+        next.fill(0);
         for (let i = 0; i < ground.length; i++) {
             const amount = ground[i];
             if (!amount) continue;
-            const share = amount * rate * STEP;
-            let retained = amount;
-            for (const neighbor of this.neighbors(i)) {
-                if (neighbor < 0) continue;
-                next[neighbor] += share;
-                retained -= share;
+            const share = amount * fraction;
+            const x = i % WIDTH;
+            let neighbors = 0;
+            if (x > 0) {
+                next[i - 1] += share;
+                neighbors++;
             }
-            next[i] += retained;
+            if (x < WIDTH - 1) {
+                next[i + 1] += share;
+                neighbors++;
+            }
+            if (i >= WIDTH) {
+                next[i - WIDTH] += share;
+                neighbors++;
+            }
+            if (i < ground.length - WIDTH) {
+                next[i + WIDTH] += share;
+                neighbors++;
+            }
+            next[i] += amount - share * neighbors;
         }
-        return next;
+        this[resource] = next;
+        this.diffusionBuffers[resource] = ground;
     }
 
     bite(cell) {
@@ -202,10 +227,15 @@ export class Simulation {
     }
 
     tick() {
-        this.time += STEP;
+        const tickNumber = Math.round(this.time / STEP) + 1;
+        this.time = tickNumber * STEP;
         this.removeToxicCells();
-        this.energy = this.diffuse(this.energy, 0.06);
-        this.radiation = this.diffuse(this.radiation, 0.02);
+        this.diffuse('energy', STEP);
+        if (tickNumber % SLOW_DIFFUSION_TICKS === 0) {
+            const duration = STEP * SLOW_DIFFUSION_TICKS;
+            this.diffuse('organic', duration);
+            this.diffuse('radiation', duration);
+        }
         this.removeToxicCells();
         const existing = [...this.cells.values()];
         const shadedColumns = new Set();

@@ -21,6 +21,8 @@ const clock = document.querySelector('#clock');
 const phase = document.querySelector('#phase');
 const stats = document.querySelector('#stats');
 const inspect = document.querySelector('#inspect');
+const FRAME_SIMULATION_BUDGET = 8;
+const MAX_BACKLOG_SECONDS = 0.1;
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
     organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы'
@@ -251,6 +253,7 @@ viewport.addEventListener('wheel', event => {
 }, { passive: false });
 const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
+speed.addEventListener('change', () => { elapsed = 0; });
 document.querySelector('#reset').addEventListener('click', () => {
     simulation = new Simulation();
     elapsed = 0;
@@ -260,8 +263,11 @@ document.querySelector('#reset').addEventListener('click', () => {
 
 function frame(now) {
     if (!paused) {
-        elapsed += Math.min((now - previous) / 1000, 0.25) * Number(speed.value);
-        while (elapsed >= STEP) {
+        const multiplier = Number(speed.value);
+        elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,
+            MAX_BACKLOG_SECONDS * multiplier + STEP);
+        const deadline = performance.now() + FRAME_SIMULATION_BUDGET;
+        while (elapsed >= STEP && performance.now() < deadline) {
             simulation.tick();
             elapsed -= STEP;
         }
