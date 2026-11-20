@@ -170,7 +170,7 @@ const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
 const SLOW_DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
-const BITE_RATE = 50;
+const BITE_RATE = 100;
 const CELL_COST = 300;
 const SEED_COST = { energy: 225, organic: 75 };
 const THROWN_SEED_COST = { energy: 675, organic: SEED_COST.organic };
@@ -379,10 +379,20 @@ class Simulation {
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? 50 : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
-        if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const index = ordered.find(candidate => !this.cells.has(candidate));
-        if (index === undefined) return;
+        const index = ordered.find(candidate => {
+            if (this.cells.has(candidate)) return false;
+            if (type !== 'teeth') return true;
+            return this.neighbors(candidate).some(adjacent => {
+                const neighbor = this.cells.get(adjacent);
+                return neighbor && neighbor.colony.family !== cell.colony.family;
+            });
+        });
+        if (index === undefined) {
+            if (type === 'teeth') cell.gene++;
+            return;
+        }
+        if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
 
         if (type === 'seed') {
             this.seed(index % WIDTH, Math.floor(index / WIDTH), cell.colony);
