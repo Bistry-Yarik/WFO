@@ -210,7 +210,7 @@ function updateReadout() {
         return;
     }
     const cell = simulation.cells.get(hovered);
-    const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
+    const soil = `Вода ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     const needs = cell?.colony.seedNeeds;
     let channelDetails = '';
     if (cell?.type === 'channel') {
