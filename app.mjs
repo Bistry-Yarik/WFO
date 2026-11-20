@@ -100,11 +100,20 @@ function configureWorldCanvas() {
     field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
 }
 
+function channelStockColor(cell) {
+    const limit = simulation.limits.stop;
+    const red = Math.round(82 + 173 * Math.min(cell.organic / limit, 1));
+    const blue = Math.round(82 + 173 * Math.min(cell.energy / limit, 1));
+    return [red, 82, blue];
+}
+
 function drawCell(cell) {
     const { width } = simulation;
     const x = (cell.index % width + 0.5) * scale;
     const y = (Math.floor(cell.index / width) + 0.5) * scale;
-    const color = familyColors.checked ? `hsl(${cell.colony.hue} 80% 70%)` : '#fff';
+    let color = '#fff';
+    if (familyColors.checked) color = `hsl(${cell.colony.hue} 80% 70%)`;
+    else if (cell.type === 'channel') color = `rgb(${channelStockColor(cell).join(' ')})`;
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
@@ -115,8 +124,9 @@ function drawCell(cell) {
             const neighbor = simulation.cells.get(index);
             if (!neighbor || neighbor.colony.family !== cell.colony.family) return;
             const [dx, dy] = DIRECTIONS[direction];
-            const nx = x + dx * scale;
-            const ny = y + dy * scale;
+            const length = !familyColors.checked && neighbor.type === 'channel' ? scale / 2 : scale;
+            const nx = x + dx * length;
+            const ny = y + dy * length;
             context.moveTo(x, y);
             context.lineTo(nx, ny);
             const offsetX = nx < 0 ? worldCanvas.width : nx >= worldCanvas.width ? -worldCanvas.width : 0;
@@ -213,7 +223,10 @@ function drawOverview() {
     const pixels = terrainPixels.data;
     const palette = new Map();
     for (const [index, cell] of simulation.cells) {
-        let color = overviewColors[cell.type] ?? (familyColors.checked ? null : [255, 255, 255]);
+        let color = overviewColors[cell.type];
+        if (!color && !familyColors.checked) {
+            color = cell.type === 'channel' ? channelStockColor(cell) : [255, 255, 255];
+        }
         if (!color) {
             const hue = cell.colony.hue;
             if (!palette.has(hue)) {
