@@ -44,6 +44,7 @@ const CONTINUOUS_SPEED = 150;
 const simulationTasks = new MessageChannel();
 const FAST_DRAW_INTERVAL = 1000 / 30;
 const COMPUTE_PRIORITY_DRAW_INTERVAL = 1000 / 20;
+const DENSE_DRAW_INTERVAL = 100;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
@@ -240,7 +241,8 @@ function draw() {
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
     const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
-        || (Number(speed.value) > 250 && simulation.cells.size >= DENSE_MAP_CELLS && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM);
+        || (simulation.cells.size >= DENSE_MAP_CELLS
+            && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
@@ -646,7 +648,10 @@ function frame(now) {
         speedSampleAt = now;
         speedSampleTime = simulation.time;
     }
-    const drawInterval = multiplier >= COMPUTE_PRIORITY_SPEED ? COMPUTE_PRIORITY_DRAW_INTERVAL : FAST_DRAW_INTERVAL;
+    let drawInterval = FAST_DRAW_INTERVAL;
+    if (multiplier >= COMPUTE_PRIORITY_SPEED) {
+        drawInterval = simulation.cells.size >= DENSE_MAP_CELLS ? DENSE_DRAW_INTERVAL : COMPUTE_PRIORITY_DRAW_INTERVAL;
+    }
     if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= drawInterval) {
         draw();
         updateReadout();

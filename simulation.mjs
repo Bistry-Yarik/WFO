@@ -137,6 +137,10 @@ export class Simulation {
         this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
         this.neighborCache = new Array(this.energy.length);
+        this.throwColumns = Array.from({ length: width }, (_, x) =>
+            Uint16Array.from(THROW_OFFSETS, ([dx]) => (x + dx + width) % width));
+        this.throwRows = Array.from({ length: this.height }, (_, y) =>
+            Uint32Array.from(THROW_OFFSETS, ([, dy]) => ((y + dy + this.height) % this.height) * width));
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.diffusionBuffers = {
             energy: new Float64Array(this.energy.length),
@@ -333,15 +337,17 @@ export class Simulation {
     throwSeed(cell) {
         const { throwEnergy, organic } = cell.colony.seedNeeds;
         if (cell.energy < throwEnergy || cell.organic < organic) return false;
-        const x = cell.index % this.width;
-        const y = Math.floor(cell.index / this.width);
+        const columns = this.throwColumns[cell.index % this.width];
+        const rows = this.throwRows[Math.floor(cell.index / this.width)];
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
+        if (this.cells.size === this.energy.length) return false;
+        let offset = start;
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
-            const [dx, dy] = THROW_OFFSETS[(start + i) % THROW_OFFSETS.length];
-            const index = this.wrappedIndex(x + dx, y + dy);
+            const index = columns[offset] + rows[offset];
+            if (++offset === THROW_OFFSETS.length) offset = 0;
+            if (this.cells.has(index) || !this.isSeedSiteSafe(index)) continue;
             const nx = index % this.width;
             const ny = Math.floor(index / this.width);
-            if (!this.isSeedSiteSafe(index)) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -450,15 +456,23 @@ export class Simulation {
 
     prepareTick(daylight) {
         if (this.tickCells?.length === this.cells.size && this.tickDaylight === daylight) return;
-        const existing = [...this.cells.values()];
-        if (daylight) existing.sort((a, b) => a.index - b.index);
+        let grid = null;
+        let existing;
+        if (this.cells.size > this.energy.length / 4) {
+            grid = new Array(this.energy.length);
+            for (const cell of this.cells.values()) grid[cell.index] = cell;
+            existing = daylight ? grid.filter(Boolean) : [...this.cells.values()];
+        } else {
+            existing = [...this.cells.values()];
+            if (daylight) existing.sort((a, b) => a.index - b.index);
+        }
         this.tickCells = existing;
         this.tickDaylight = daylight;
         this.transfers.length = 0;
         for (const cell of existing) {
             for (const index of this.neighbors(cell.index)) {
                 if (index <= cell.index) continue;
-                const neighbor = this.cells.get(index);
+                const neighbor = grid ? grid[index] : this.cells.get(index);
                 if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
                 this.transfers.push({ cell, neighbor, energy: 0, organic: 0 });
             }
