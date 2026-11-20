@@ -1,8 +1,12 @@
 import { Simulation, WIDTH, HEIGHT, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
-const context = field.getContext('2d');
-const scale = field.width / WIDTH;
+const screen = field.getContext('2d');
+const worldCanvas = document.createElement('canvas');
+worldCanvas.width = field.width;
+worldCanvas.height = field.height;
+const context = worldCanvas.getContext('2d');
+const scale = worldCanvas.width / WIDTH;
 const terrain = document.createElement('canvas');
 terrain.width = WIDTH;
 terrain.height = HEIGHT;
@@ -26,6 +30,7 @@ const limitStatus = document.querySelector('#limit-status');
 const soilLimitLabel = document.querySelector('#soil-limit-label');
 const settingKeys = Object.keys(DEFAULT_LIMITS);
 const cameraKeys = new Set();
+const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
@@ -66,8 +71,8 @@ function drawCell(cell) {
             const ny = y + dy * scale;
             context.moveTo(x, y);
             context.lineTo(nx, ny);
-            const offsetX = nx < 0 ? field.width : nx >= field.width ? -field.width : 0;
-            const offsetY = ny < 0 ? field.height : ny >= field.height ? -field.height : 0;
+            const offsetX = nx < 0 ? worldCanvas.width : nx >= worldCanvas.width ? -worldCanvas.width : 0;
+            const offsetY = ny < 0 ? worldCanvas.height : ny >= worldCanvas.height ? -worldCanvas.height : 0;
             if (offsetX || offsetY) {
                 context.moveTo(x + offsetX, y + offsetY);
                 context.lineTo(nx + offsetX, ny + offsetY);
@@ -113,6 +118,18 @@ function recordDeath(index, cause, resources) {
     deathEffects.set(index, { cause, resources, start: performance.now() });
 }
 
+function wrappedArc(x, y, radius, start, end) {
+    const { width, height } = worldCanvas;
+    const offsetX = x - radius < 0 ? width : x + radius > width ? -width : 0;
+    const offsetY = y - radius < 0 ? height : y + radius > height ? -height : 0;
+    for (const dx of offsetX ? [0, offsetX] : [0]) {
+        for (const dy of offsetY ? [0, offsetY] : [0]) {
+            context.moveTo(x + dx + radius * Math.cos(start), y + dy + radius * Math.sin(start));
+            context.arc(x + dx, y + dy, radius, start, end);
+        }
+    }
+}
+
 function drawDeathEffects(now) {
     if (deathEffects.size === 0) return;
     context.save();
@@ -133,13 +150,13 @@ function drawDeathEffects(now) {
         if (effect.resources & ENERGY_RESOURCE) {
             context.strokeStyle = '#69b3ff';
             context.beginPath();
-            context.arc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI);
+            wrappedArc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI);
             context.stroke();
         }
         if (effect.resources & ORGANIC_RESOURCE) {
             context.strokeStyle = '#ff7885';
             context.beginPath();
-            context.arc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI);
+            wrappedArc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI);
             context.stroke();
         }
     }
@@ -163,7 +180,7 @@ function draw() {
         pixels[offset + 3] = 255;
     }
     terrainContext.putImageData(terrainPixels, 0, 0);
-    context.drawImage(terrain, 0, 0, field.width, field.height);
+    context.drawImage(terrain, 0, 0, worldCanvas.width, worldCanvas.height);
     for (const cell of simulation.cells.values()) {
         if (cell.type === 'channel') drawCell(cell);
     }
@@ -178,8 +195,17 @@ function draw() {
         context.strokeStyle = '#fff';
         context.lineWidth = 2;
         context.beginPath();
-        context.arc(x, y, 9, 0, Math.PI * 2);
+        wrappedArc(x, y, 9, 0, Math.PI * 2);
         context.stroke();
+    }
+    const tileWidth = WIDTH * camera.zoom;
+    const tileHeight = HEIGHT * camera.zoom;
+    const left = -Math.round(camera.x * camera.zoom);
+    const top = -Math.round(camera.y * camera.zoom);
+    for (let y = top; y < field.height; y += tileHeight) {
+        for (let x = left; x < field.width; x += tileWidth) {
+            screen.drawImage(worldCanvas, x, y, tileWidth, tileHeight);
+        }
     }
 }
 
@@ -225,11 +251,23 @@ function updateReadout() {
         : soil;
 }
 
+function wrap(value, size) {
+    return ((value % size) + size) % size;
+}
+
+function moveCamera(dx, dy) {
+    camera.x = wrap(camera.x + dx, WIDTH);
+    camera.y = wrap(camera.y + dy, HEIGHT);
+}
+
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
-    const x = Math.floor((event.clientX - rect.left) * WIDTH / rect.width);
-    const y = Math.floor((event.clientY - rect.top) * HEIGHT / rect.height);
-    return x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT ? y * WIDTH + x : -1;
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
+    const x = Math.floor((px + Math.round(camera.x * camera.zoom)) / camera.zoom);
+    const y = Math.floor((py + Math.round(camera.y * camera.zoom)) / camera.zoom);
+    return wrap(y, HEIGHT) * WIDTH + wrap(x, WIDTH);
 }
 
 function plant(index) {
@@ -246,18 +284,25 @@ function plant(index) {
 if ('PointerEvent' in window) {
     field.addEventListener('pointerdown', event => {
         if (!event.isPrimary || event.button !== 0) return;
-        press = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        press = { id: event.pointerId, x: event.clientX, y: event.clientY, dragging: false };
+        field.setPointerCapture(event.pointerId);
+    });
+    field.addEventListener('pointermove', event => {
+        if (event.pointerId !== press?.id) return;
+        const dx = event.clientX - press.x;
+        const dy = event.clientY - press.y;
+        if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
+        moveCamera(-dx / camera.zoom, -dy / camera.zoom);
+        Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
         if (event.pointerId !== press?.id) return;
-        const distance = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+        const stationary = !press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10;
         press = null;
-        if (distance <= 10) {
-            lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
-            plant(indexAt(event));
-        }
+        lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
+        if (stationary) plant(indexAt(event));
     });
-    field.addEventListener('pointercancel', () => { press = null; });
+    field.addEventListener('lostpointercapture', () => { press = null; });
 }
 
 field.addEventListener('click', event => {
@@ -267,20 +312,18 @@ field.addEventListener('click', event => {
 });
 
 document.querySelector('#plant').addEventListener('click', () => {
-    const box = viewport.getBoundingClientRect();
     const rect = field.getBoundingClientRect();
-    const visibleWidth = Math.min(viewport.clientWidth, rect.right - box.left);
-    const visibleHeight = Math.min(viewport.clientHeight, rect.bottom - box.top);
-    const x = box.left + visibleWidth / 2;
-    const y = box.top + visibleHeight / 2;
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
     const center = indexAt({ clientX: x, clientY: y });
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < WIDTH * HEIGHT; index++) {
         if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
                 || simulation.organic[index] >= simulation.limits.soil) continue;
-        const distance = Math.abs(index % WIDTH - center % WIDTH)
-            + Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
+        const dx = Math.abs(index % WIDTH - center % WIDTH);
+        const dy = Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
+        const distance = Math.min(dx, WIDTH - dx) + Math.min(dy, HEIGHT - dy);
         if (distance < bestDistance) {
             nearest = index;
             bestDistance = distance;
@@ -298,30 +341,42 @@ pause.addEventListener('click', () => {
     paused = !paused;
     pause.textContent = paused ? 'Продолжить' : 'Пауза';
 });
-function setZoom(value, anchorX = viewport.clientWidth / 2, anchorY = viewport.clientHeight / 2) {
-    const next = Math.max(1, Math.min(10, value));
-    const previousWidth = field.getBoundingClientRect().width;
-    const ratio = WIDTH * next / previousWidth;
-    zoom.value = String(next);
-    zoomOut.disabled = next === 1;
-    zoomIn.disabled = next === 10;
-    field.style.width = `${WIDTH * next}px`;
-    viewport.scrollLeft = (viewport.scrollLeft + anchorX) * ratio - anchorX;
-    viewport.scrollTop = (viewport.scrollTop + anchorY) * ratio - anchorY;
+function sizeView() {
+    const maxHeight = parseFloat(getComputedStyle(viewport).maxHeight);
+    const width = Math.max(1, Math.min(viewport.clientWidth, WIDTH * camera.zoom));
+    const height = Math.max(1, Math.floor(Math.min(maxHeight, HEIGHT * camera.zoom)));
+    if (field.width !== width) field.width = width;
+    if (field.height !== height) field.height = height;
+    screen.imageSmoothingEnabled = false;
+}
+
+function setZoom(value, anchorX, anchorY) {
+    const oldX = anchorX ?? field.width / 2;
+    const oldY = anchorY ?? field.height / 2;
+    const previousZoom = camera.zoom;
+    camera.zoom = Math.max(1, Math.min(10, value));
+    zoom.value = String(camera.zoom);
+    zoomOut.disabled = camera.zoom === 1;
+    zoomIn.disabled = camera.zoom === 10;
+    sizeView();
+    const newX = Math.min(anchorX ?? field.width / 2, field.width);
+    const newY = Math.min(anchorY ?? field.height / 2, field.height);
+    moveCamera(oldX / previousZoom - newX / camera.zoom, oldY / previousZoom - newY / camera.zoom);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
 zoomOut.addEventListener('click', () => setZoom(Number(zoom.value) - 1));
 zoomIn.addEventListener('click', () => setZoom(Number(zoom.value) + 1));
-viewport.addEventListener('wheel', event => {
+field.addEventListener('wheel', event => {
     if (!event.deltaY || event.ctrlKey) return;
     event.preventDefault();
-    const rect = viewport.getBoundingClientRect();
+    const rect = field.getBoundingClientRect();
     setZoom(Number(zoom.value) - Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
     hovered = indexAt(event);
 }, { passive: false });
 const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
+new ResizeObserver(sizeView).observe(viewport);
 function validLimits(limits) {
     return limits && settingKeys.every(key => Number.isSafeInteger(limits[key])
         && limits[key] >= (key === 'slowdown' ? 0 : 1)) && limits.slowdown < limits.stop;
@@ -382,7 +437,7 @@ function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
     for (const key of cameraKeys) {
         const [dx, dy] = cameraBindings[key];
-        viewport.scrollBy(dx * delta * 420, dy * delta * 420);
+        moveCamera(dx * delta * 420 / camera.zoom, dy * delta * 420 / camera.zoom);
     }
     if (!paused) {
         const multiplier = Number(speed.value);

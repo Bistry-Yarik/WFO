@@ -27,8 +27,8 @@ button:disabled { opacity: .5; cursor: default; }
 .touch-hint { display: none; }
 button:hover, select:hover { background: #314b3d; }
 #startup { margin: 0; padding: 12px; color: #f1d5a6; }
-.viewport { overflow: auto; max-height: 72vh; background: #101d18; }
-canvas { touch-action: manipulation; display: block; width: 100%; height: auto; cursor: crosshair; image-rendering: pixelated; }
+.viewport { overflow: hidden; max-height: 72vh; background: #101d18; }
+canvas { touch-action: none; display: block; cursor: crosshair; image-rendering: pixelated; }
 aside { display: grid; gap: 12px; align-content: start; }
 aside section { padding: 15px; }
 dl, ul { margin: 12px 0 0; display: grid; gap: 9px; }
