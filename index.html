@@ -112,7 +112,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <label>Пакет <select id="seed-pack">
                         <option value="standard">Обычный</option>
                         <option value="worm">Червеобразный</option>
-                        <option value="organic">Сборщики органики + преобразователи</option>
+                        <option value="cleanup">Очистители + преобразователи</option>
                         <option value="solar">Хлорофилл + преобразователи</option>
                     </select></label>
                     <label>Радиус <select id="seed-radius">
@@ -196,6 +196,7 @@ const RADIATION_RESOURCE = 4;
 const RADIATION_LETHAL_ABOVE = 999;
 const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner'];
 const GENOME_LENGTH = 9;
+const MUTATION_TYPES = [...TYPES, 'adaptive'];
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
@@ -263,7 +264,7 @@ function randomGenome(random) {
 }
 
 const SPECIAL_PACKS = {
-    organic: ['organic', 'converter', 'channel', 'organic', 'converter', 'chlorophyll', 'organic', 'converter', 'seed'],
+    cleanup: ['cleaner', 'converter', 'channel', 'cleaner', 'converter', 'chlorophyll', 'cleaner', 'converter', 'seed'],
     solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed']
 };
 
@@ -271,15 +272,15 @@ function packGenome(pack, random) {
     if (pack === 'worm') {
         const heading = Math.floor(random() * DIRECTIONS.length);
         return [
-            { type: 'channel', direction: heading },
-            { type: 'adaptive', direction: (heading + 1) % 4 },
-            { type: 'teeth', direction: (heading + 3) % 4 },
+            { type: 'channel', direction: heading, preferBuild: true, branchStep: 0 },
+            { type: 'adaptive', direction: (heading + 1) % 4, preferBuild: true },
+            { type: 'teeth', direction: (heading + 3) % 4, preferBuild: true },
             { type: 'chlorophyll', direction: (heading + 3) % 4 }
         ];
     }
     const types = SPECIAL_PACKS[pack];
     return types
-        ? types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }))
+        ? types.map((type, step) => ({ type, direction: Math.floor(random() * DIRECTIONS.length), preferBuild: step < 2 }))
         : randomGenome(random);
 }
 
@@ -337,8 +338,9 @@ class Simulation {
             const locus = Math.floor(this.random() * (2 * genome.length + SEED_REQUIREMENT_TRAITS.length));
             if (locus < genome.length) {
                 const command = genome[locus];
-                const alternatives = TYPES.filter(type => type !== command.type);
-                command.type = alternatives[Math.floor(this.random() * alternatives.length)];
+                const alternatives = MUTATION_TYPES.filter(type => type !== command.type);
+                const type = alternatives[Math.floor(this.random() * alternatives.length)];
+                genome[locus] = { type, direction: command.direction };
             } else if (locus < 2 * genome.length) {
                 const command = genome[locus - genome.length];
                 const turn = 1 + Math.floor(this.random() * (DIRECTIONS.length - 1));
@@ -358,7 +360,6 @@ class Simulation {
             id,
             hue: parent?.hue ?? (id * 137.508 + 25) % 360,
             family: parent?.family ?? id,
-            pack: parent?.pack ?? pack,
             genome,
             seedNeeds,
             thirsty: false,
@@ -534,7 +535,7 @@ class Simulation {
 
     grow(cell) {
         if (cell.colony.thirsty) return;
-        const { type, direction } = cell.colony.genome[cell.gene % cell.colony.genome.length];
+        const { type, direction, preferBuild, branchStep } = cell.colony.genome[cell.gene % cell.colony.genome.length];
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
@@ -547,10 +548,7 @@ class Simulation {
                 return neighbor && neighbor.colony.family !== cell.colony.family;
             });
         });
-        const pack = cell.colony.pack;
-        const presetConstruction = (pack === 'worm' && (type === 'channel' || type === 'teeth'))
-            || (pack !== 'standard' && cell.gene < 2 && type !== 'seed' && type !== 'teeth');
-        const buildFirst = presetConstruction && index !== undefined
+        const buildFirst = preferBuild && index !== undefined
             && cell.energy >= requirements.energy && cell.organic >= requirements.organic;
         if (!buildFirst && this.throwSeed(cell)) {
             if (type === 'seed') cell.gene++;
@@ -569,7 +567,7 @@ class Simulation {
         } else {
             const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
             const child = this.makeCell(index, childType, cell.colony, cost.energy, cost.organic);
-            if (type === 'channel' && cell.colony.pack !== 'worm') child.gene = cell.gene + 1;
+            if (type === 'channel') child.gene = branchStep ?? cell.gene + 1;
             this.cells.set(index, child);
             this.tickCells = null;
             cell.energy -= cost.energy;
