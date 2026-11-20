@@ -17,6 +17,8 @@ const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
 const viewport = document.querySelector('.viewport');
+const fieldPanel = viewport.closest('.field-panel');
+const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
 const zoomIn = document.querySelector('#zoom-in');
 const touch = matchMedia('(hover: none)').matches;
@@ -411,6 +413,45 @@ limitsForm.addEventListener('submit', event => {
     }
 });
 showLimits();
+
+function updateFullscreen() {
+    const expanded = document.fullscreenElement === fieldPanel || fieldPanel.classList.contains('is-expanded');
+    fullscreen.textContent = expanded ? 'Выйти из полного экрана' : 'Во весь экран';
+    fullscreen.setAttribute('aria-pressed', String(expanded));
+}
+
+async function toggleFullscreen() {
+    if (document.fullscreenElement === fieldPanel) {
+        await document.exitFullscreen();
+    } else if (fieldPanel.classList.contains('is-expanded')) {
+        fieldPanel.classList.remove('is-expanded');
+    } else {
+        fieldPanel.classList.add('is-expanded');
+        updateFullscreen();
+        try {
+            await fieldPanel.requestFullscreen();
+            if (fieldPanel.classList.contains('is-expanded')) {
+                fieldPanel.classList.remove('is-expanded');
+            } else if (document.fullscreenElement === fieldPanel) {
+                await document.exitFullscreen();
+            }
+        } catch {
+            // The expanded view works even when the browser blocks native fullscreen.
+        }
+    }
+    updateFullscreen();
+}
+
+fullscreen.addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', updateFullscreen);
+window.addEventListener('keydown', event => {
+    if (event.code === 'F11' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        if (!event.repeat) toggleFullscreen();
+    } else if (event.code === 'Escape' && fieldPanel.classList.contains('is-expanded')) {
+        toggleFullscreen();
+    }
+});
 
 window.addEventListener('keydown', event => {
     if (!cameraBindings[event.code] || event.ctrlKey || event.metaKey || event.altKey

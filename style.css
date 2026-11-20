@@ -67,3 +67,18 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .settings label { display: grid; gap: 4px; }
 .settings input { width: 100%; min-height: 36px; font: inherit; }
 #limit-status { font-size: 13px; color: var(--muted); }
+
+.field-panel:is(:fullscreen, .is-expanded) {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+}
+.field-panel.is-expanded { position: fixed; inset: 0; z-index: 10; }
+.field-panel:is(:fullscreen, .is-expanded) .viewport {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+}
