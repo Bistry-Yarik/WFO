@@ -96,13 +96,13 @@ function packGenome(pack, random) {
         const left = (heading + 3) % 4;
         const right = (heading + 1) % 4;
         return [
-            { type: 'cleaner', direction: heading, preferBuild: true, seekRadiation: true },
-            { type: 'converter', direction: (heading + 2) % 4, preferBuild: true },
-            { type: 'channel', direction: left, preferBuild: true, seekRadiation: true, branchStep: 0 },
-            { type: 'channel', direction: right, preferBuild: true, seekRadiation: true, branchStep: 0 },
+            { type: 'chlorophyll', direction: (heading + 2) % 4, preferBuild: true },
+            { type: 'channel', direction: heading, preferBuild: true, seekRadiation: true, branchStep: 4 },
+            { type: 'converter', direction: right, preferBuild: true },
+            { type: 'cleaner', direction: left, preferBuild: true, seekRadiation: true },
+            { type: 'channel', direction: right, preferBuild: true, seekRadiation: true, branchStep: 4 },
             { type: 'cleaner', direction: left, preferBuild: true, seekRadiation: true },
             { type: 'converter', direction: right },
-            { type: 'chlorophyll', direction: heading },
             { type: 'cleaner', direction: right, preferBuild: true, seekRadiation: true },
             { type: 'converter', direction: left },
             { type: 'seed', direction: heading }
