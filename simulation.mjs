@@ -34,8 +34,9 @@ const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 50;
 const CELL_COST = 300;
 const SEED_COST = { energy: 225, organic: 75 };
-const THROWN_SEED_COST = { energy: 675, organic: 225 };
-const SEED_REQUIREMENT_BASE = { energy: 300, organic: 100, throwEnergy: 900, throwOrganic: 300 };
+const THROWN_SEED_COST = { energy: 675, organic: SEED_COST.organic };
+const SEED_THROW_RANGE = 6;
+const SEED_REQUIREMENT_BASE = { energy: 300, organic: 100, throwEnergy: 900 };
 const SEED_REQUIREMENT_TRAITS = Object.keys(SEED_REQUIREMENT_BASE);
 
 function randomRequirement(base, random, previous) {
@@ -46,10 +47,10 @@ function randomRequirement(base, random, previous) {
     return candidate < previous ? candidate : candidate + 1;
 }
 const THROW_OFFSETS = [];
-for (let dy = -3; dy <= 3; dy++) {
-    for (let dx = -3; dx <= 3; dx++) {
+for (let dy = -SEED_THROW_RANGE; dy <= SEED_THROW_RANGE; dy++) {
+    for (let dx = -SEED_THROW_RANGE; dx <= SEED_THROW_RANGE; dx++) {
         const distance = Math.abs(dx) + Math.abs(dy);
-        if (distance >= 1 && distance <= 3) THROW_OFFSETS.push([dx, dy]);
+        if (distance >= 1 && distance <= SEED_THROW_RANGE) THROW_OFFSETS.push([dx, dy]);
     }
 }
 
@@ -213,8 +214,8 @@ export class Simulation {
     }
 
     throwSeed(cell) {
-        const { throwEnergy, throwOrganic } = cell.colony.seedNeeds;
-        if (cell.energy < throwEnergy || cell.organic < throwOrganic) return false;
+        const { throwEnergy, organic } = cell.colony.seedNeeds;
+        if (cell.energy < throwEnergy || cell.organic < organic) return false;
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
