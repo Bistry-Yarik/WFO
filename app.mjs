@@ -194,8 +194,12 @@ function updateReadout() {
     }
     const cell = simulation.cells.get(hovered);
     const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
+    const needs = cell?.colony.seedNeeds;
+    const requirements = cell?.type === 'channel'
+        ? ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.throwOrganic}`
+        : '';
     inspect.textContent = cell
-        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)} · ${soil}`
+        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${requirements} · ${soil}`
         : soil;
 }
 

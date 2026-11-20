@@ -132,7 +132,6 @@ const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
-const SEED_ORGANIC_DIVISOR = 3;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
@@ -153,8 +152,19 @@ const CYCLE_LENGTH = 600;
 const SLOW_DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 50;
-const SEED_COST = 300;
-const THROWN_SEED_COST = 900;
+const CELL_COST = 300;
+const SEED_COST = { energy: 225, organic: 75 };
+const THROWN_SEED_COST = { energy: 675, organic: 225 };
+const SEED_REQUIREMENT_BASE = { energy: 300, organic: 100, throwEnergy: 900, throwOrganic: 300 };
+const SEED_REQUIREMENT_TRAITS = Object.keys(SEED_REQUIREMENT_BASE);
+
+function randomRequirement(base, random, previous) {
+    const min = Math.round(base * 0.8);
+    const max = Math.round(base * 1.2);
+    if (previous === undefined) return min + Math.floor(random() * (max - min + 1));
+    const candidate = min + Math.floor(random() * (max - min));
+    return candidate < previous ? candidate : candidate + 1;
+}
 const THROW_OFFSETS = [];
 for (let dy = -3; dy <= 3; dy++) {
     for (let dx = -3; dx <= 3; dx++) {
@@ -191,7 +201,7 @@ class Simulation {
         return this.time % CYCLE_LENGTH < DAY_LENGTH;
     }
 
-    seed(x, y, parent = null, reserve = parent ? SEED_COST : 1350) {
+    seed(x, y, parent = null, cost = SEED_COST) {
         const index = y * WIDTH + x;
         if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
@@ -199,12 +209,23 @@ class Simulation {
             'chlorophyll', 'organic', 'channel',
             'seed', TYPES[Math.floor(this.random() * TYPES.length)]
         ];
+        const seedNeeds = parent ? { ...parent.seedNeeds } : {};
+        if (!parent) {
+            for (const trait of SEED_REQUIREMENT_TRAITS) {
+                seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random);
+            }
+        }
         const exposure = Math.min(this.radiation[index] / SOIL_LIMIT, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
-            const locus = Math.floor(this.random() * genome.length);
-            const alternatives = TYPES.filter(type => type !== genome[locus]);
-            genome[locus] = alternatives[Math.floor(this.random() * alternatives.length)];
+            const locus = Math.floor(this.random() * (genome.length + SEED_REQUIREMENT_TRAITS.length));
+            if (locus < genome.length) {
+                const alternatives = TYPES.filter(type => type !== genome[locus]);
+                genome[locus] = alternatives[Math.floor(this.random() * alternatives.length)];
+            } else {
+                const trait = SEED_REQUIREMENT_TRAITS[locus - genome.length];
+                seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random, seedNeeds[trait]);
+            }
             this.mutations++;
             for (let ny = Math.max(0, y - 1); ny <= Math.min(HEIGHT - 1, y + 1); ny++) {
                 for (let nx = Math.max(0, x - 1); nx <= Math.min(WIDTH - 1, x + 1); nx++) {
@@ -217,11 +238,12 @@ class Simulation {
             hue: parent?.hue ?? (id * 137.508 + 25) % 360,
             family: parent?.family ?? id,
             genome,
+            seedNeeds,
             orientation: parent?.orientation ?? Math.floor(this.random() * 4)
         };
         this.colonies.set(id, colony);
-        const seed = this.makeCell(index, 'seed', colony, reserve);
-        if (parent) seed.organic /= SEED_ORGANIC_DIVISOR;
+        const seed = this.makeCell(index, 'seed', colony, parent ? cost.energy : 1350);
+        if (parent) seed.organic = cost.organic;
         this.cells.set(index, seed);
         return true;
     }
@@ -311,8 +333,8 @@ class Simulation {
     }
 
     throwSeed(cell) {
-        const organicCost = THROWN_SEED_COST / SEED_ORGANIC_DIVISOR;
-        if (cell.energy < THROWN_SEED_COST || cell.organic < organicCost) return false;
+        const { throwEnergy, throwOrganic } = cell.colony.seedNeeds;
+        if (cell.energy < throwEnergy || cell.organic < throwOrganic) return false;
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
@@ -324,8 +346,8 @@ class Simulation {
             const index = ny * WIDTH + nx;
             if (this.energy[index] > SOIL_LIMIT || this.organic[index] > SOIL_LIMIT) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
-            cell.energy -= THROWN_SEED_COST;
-            cell.organic -= organicCost;
+            cell.energy -= THROWN_SEED_COST.energy;
+            cell.organic -= THROWN_SEED_COST.organic;
             return true;
         }
         return false;
@@ -338,9 +360,9 @@ class Simulation {
             return;
         }
         const neighbors = this.neighbors(cell.index);
-        const cost = type === 'channel' ? 50 : SEED_COST;
-        const organicCost = type === 'seed' ? cost / SEED_ORGANIC_DIVISOR : cost;
-        if (cell.energy < cost || cell.organic < organicCost) return;
+        const cost = type === 'channel' ? 50 : CELL_COST;
+        const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
+        if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
         const rotation = (cell.colony.orientation + cell.gene) % 4;
         const ordered = neighbors.slice(rotation).concat(neighbors.slice(0, rotation));
         const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
@@ -348,13 +370,15 @@ class Simulation {
 
         if (type === 'seed') {
             this.seed(index % WIDTH, Math.floor(index / WIDTH), cell.colony);
+            cell.energy -= SEED_COST.energy;
+            cell.organic -= SEED_COST.organic;
         } else {
             const child = this.makeCell(index, type, cell.colony, cost);
             if (type === 'channel') child.gene = cell.gene + 1;
             this.cells.set(index, child);
+            cell.energy -= cost;
+            cell.organic -= cost;
         }
-        cell.energy -= cost;
-        cell.organic -= organicCost;
         cell.gene++;
     }
 
@@ -678,8 +702,12 @@ function updateReadout() {
     }
     const cell = simulation.cells.get(hovered);
     const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
+    const needs = cell?.colony.seedNeeds;
+    const requirements = cell?.type === 'channel'
+        ? ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.throwOrganic}`
+        : '';
     inspect.textContent = cell
-        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)} · ${soil}`
+        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${requirements} · ${soil}`
         : soil;
 }
 
