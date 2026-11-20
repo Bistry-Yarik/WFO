@@ -22,7 +22,7 @@ h1, h2 { margin: 0; }
 h1 { font-size: clamp(22px, 4vw, 38px); letter-spacing: -.045em; }
 h2 { font-size: 15px; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 16px; }
-.field-panel, aside section { background: #17231e; border: 1px solid var(--border); border-radius: 14px; }
+.field-panel, aside section, .settings { background: #17231e; border: 1px solid var(--border); border-radius: 14px; }
 .toolbar, footer, .controls, .phase { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .toolbar, footer { padding: 12px; justify-content: space-between; }
 .phase time, footer, label { color: var(--muted); font-size: 13px; }
@@ -67,6 +67,13 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
     .touch-hint { display: inline; }
     .viewport { max-height: 58vh; }
 }
+
+.settings { padding: 15px; }
+.settings summary { cursor: pointer; font-weight: 650; }
+.settings form { display: grid; gap: 8px; margin-top: 12px; }
+.settings label { display: grid; gap: 4px; }
+.settings input { width: 100%; min-height: 36px; font: inherit; }
+#limit-status { font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -90,9 +97,21 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
             </div>
             <p id="startup">Если игра не запустилась, скачайте этот HTML-файл и откройте его в браузере. Предпросмотр файла может блокировать JavaScript.</p>
             <div class="viewport"><canvas id="field" width="1000" height="640" aria-label="Поле 100 на 64 клетки. Нажмите, чтобы посадить семечко."></canvas></div>
-            <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
+            <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · WASD — переместить увеличенное поле</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
         </section>
         <aside>
+            <details class="settings">
+                <summary>Настройки лимитов</summary>
+                <form id="limits">
+                    <label>Токсичность и побледнение почвы <input name="soil" type="number" min="1" required></label>
+                    <label>Поток канала в секунду <input name="flow" type="number" min="1" required></label>
+                    <label>Радиация для максимума мутации <input name="radiation" type="number" min="1" required></label>
+                    <label>Запас для замедления выработки <input name="slowdown" type="number" min="0" required></label>
+                    <label>Запас для остановки выработки <input name="stop" type="number" min="1" required></label>
+                    <button type="submit">Применить</button>
+                    <output id="limit-status" aria-live="polite"></output>
+                </form>
+            </details>
             <section><h2>Состояние поля</h2><dl id="stats"></dl></section>
             <section><h2>Клетки</h2>
                 <ul class="legend">
@@ -110,7 +129,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <li><i class="soil-energy"></i>Энергия</li>
                     <li><i class="soil-organic"></i>Органика</li>
                     <li><i class="soil-radiation"></i>Радиация повышает шанс мутации</li>
-                    <li>От 2500 оттенок бледнеет</li>
+                    <li><span>От <span id="soil-limit-label">2500</span> оттенок бледнеет</span></li>
                 </ul>
             </section>
         </aside>
@@ -122,8 +141,9 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 const WIDTH = 100;
 const HEIGHT = 64;
 const STEP = 0.1;
-const SOIL_LIMIT = 2500;
-const CHANNEL_FLOW_LIMIT = 2500;
+const DEFAULT_LIMITS = Object.freeze({
+    soil: 2500, flow: 2500, radiation: 5000, slowdown: 1000, stop: 1500
+});
 const ENERGY_RESOURCE = 1;
 const ORGANIC_RESOURCE = 2;
 const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
@@ -132,18 +152,15 @@ const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
-const RADIATION_MUTATION_LIMIT = 5000;
 const DEATH_RADIATION = 300;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
 const BOOST_START = 900;
 const BOOST_FULL = 1400;
-const PRODUCTION_SLOWDOWN = 1000;
-const PRODUCTION_STOP = 1500;
 
-function productionFactor(stock) {
-    return Math.max(0, Math.min(1, (PRODUCTION_STOP - stock) / (PRODUCTION_STOP - PRODUCTION_SLOWDOWN)));
+function productionFactor(stock, { slowdown, stop }) {
+    return Math.max(0, Math.min(1, (stop - stock) / (stop - slowdown)));
 }
 function boostFactor(energy) {
     return Math.max(0, Math.min(1, (energy - BOOST_START) / (BOOST_FULL - BOOST_START)));
@@ -186,14 +203,19 @@ function randomGenome(random) {
     return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
 }
 
+function wrappedIndex(x, y) {
+    return ((y + HEIGHT) % HEIGHT) * WIDTH + (x + WIDTH) % WIDTH;
+}
+
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
 
 class Simulation {
-    constructor(random = Math.random, onDeath = null) {
+    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS) {
         this.random = random;
         this.onDeath = onDeath;
+        this.limits = limits;
         this.cells = new Map();
         this.colonies = new Map();
         this.energy = new Float64Array(WIDTH * HEIGHT);
@@ -225,7 +247,7 @@ class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random);
             }
         }
-        const exposure = Math.min(this.radiation[index] / RADIATION_MUTATION_LIMIT, 1);
+        const exposure = Math.min(this.radiation[index] / this.limits.radiation, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
             const locus = Math.floor(this.random() * (2 * genome.length + SEED_REQUIREMENT_TRAITS.length));
@@ -242,9 +264,9 @@ class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random, seedNeeds[trait]);
             }
             this.mutations++;
-            for (let ny = Math.max(0, y - 1); ny <= Math.min(HEIGHT - 1, y + 1); ny++) {
-                for (let nx = Math.max(0, x - 1); nx <= Math.min(WIDTH - 1, x + 1); nx++) {
-                    this.radiation[ny * WIDTH + nx] /= 2;
+            for (let ny = y - 1; ny <= y + 1; ny++) {
+                for (let nx = x - 1; nx <= x + 1; nx++) {
+                    this.radiation[wrappedIndex(nx, ny)] /= 2;
                 }
             }
         }
@@ -269,26 +291,21 @@ class Simulation {
     neighbors(index) {
         const x = index % WIDTH;
         const y = Math.floor(index / WIDTH);
-        return DIRECTIONS.map(([dx, dy]) => {
-            const nx = x + dx;
-            const ny = y + dy;
-            return nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT ? ny * WIDTH + nx : -1;
-        });
+        return DIRECTIONS.map(([dx, dy]) => wrappedIndex(x + dx, y + dy));
     }
 
     collect(cell, resource) {
         const ground = this[resource];
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
-        const base = 50 * STEP * productionFactor(cell[resource]);
+        const base = 50 * STEP * productionFactor(cell[resource], this.limits);
         const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
         let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
                 const ny = y + dy;
-                if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
-                const index = ny * WIDTH + nx;
+                const index = wrappedIndex(nx, ny);
                 const amount = Math.min(remaining, ground[index]);
                 ground[index] -= amount;
                 cell[resource] += amount;
@@ -308,31 +325,18 @@ class Simulation {
             if (!amount) continue;
             const share = amount * fraction;
             const x = i % WIDTH;
-            let neighbors = 0;
-            if (x > 0) {
-                next[i - 1] += share;
-                neighbors++;
-            }
-            if (x < WIDTH - 1) {
-                next[i + 1] += share;
-                neighbors++;
-            }
-            if (i >= WIDTH) {
-                next[i - WIDTH] += share;
-                neighbors++;
-            }
-            if (i < ground.length - WIDTH) {
-                next[i + WIDTH] += share;
-                neighbors++;
-            }
-            next[i] += amount - share * neighbors;
+            next[x === 0 ? i + WIDTH - 1 : i - 1] += share;
+            next[x === WIDTH - 1 ? i - WIDTH + 1 : i + 1] += share;
+            next[i < WIDTH ? i + ground.length - WIDTH : i - WIDTH] += share;
+            next[i >= ground.length - WIDTH ? i - ground.length + WIDTH : i + WIDTH] += share;
+            next[i] += amount - 4 * share;
         }
         this[resource] = next;
         this.diffusionBuffers[resource] = ground;
     }
 
     bite(cell) {
-        const base = BITE_RATE * STEP * productionFactor(cell.organic);
+        const base = BITE_RATE * STEP * productionFactor(cell.organic, this.limits);
         const capacity = base * (1 + boostFactor(cell.energy));
         if (capacity === 0) return;
         for (const index of this.neighbors(cell.index)) {
@@ -354,11 +358,10 @@ class Simulation {
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
             const [dx, dy] = THROW_OFFSETS[(start + i) % THROW_OFFSETS.length];
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
-            const index = ny * WIDTH + nx;
-            if (this.energy[index] >= SOIL_LIMIT || this.organic[index] >= SOIL_LIMIT) continue;
+            const index = wrappedIndex(x + dx, y + dy);
+            const nx = index % WIDTH;
+            const ny = Math.floor(index / WIDTH);
+            if (this.energy[index] >= this.limits.soil || this.organic[index] >= this.limits.soil) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -378,7 +381,7 @@ class Simulation {
         const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
+        const index = ordered.find(candidate => !this.cells.has(candidate));
         if (index === undefined) return;
 
         if (type === 'seed') {
@@ -406,8 +409,8 @@ class Simulation {
     removeToxicCells() {
         for (const cell of this.cells.values()) {
             const resources = resourceMask(
-                this.energy[cell.index] >= SOIL_LIMIT && cell.type !== 'energy',
-                this.organic[cell.index] >= SOIL_LIMIT && cell.type !== 'organic'
+                this.energy[cell.index] >= this.limits.soil && cell.type !== 'energy',
+                this.organic[cell.index] >= this.limits.soil && cell.type !== 'organic'
             );
             if (resources) this.drop(cell, 'excess', resources);
         }
@@ -432,7 +435,7 @@ class Simulation {
                 const x = cell.index % WIDTH;
                 if (cell.type === 'chlorophyll') {
                     const lightRate = shadedColumns.has(x) ? 50 : 150;
-                    cell.energy += lightRate * STEP * productionFactor(cell.energy);
+                    cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
                 }
                 shadedColumns.add(x);
             }
@@ -473,7 +476,7 @@ class Simulation {
 
         const overloaded = new Map();
         for (const cell of existing) {
-            if (cell.type === 'channel' && cell.flow > CHANNEL_FLOW_LIMIT) {
+            if (cell.type === 'channel' && cell.flow > this.limits.flow) {
                 overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
             }
         }
@@ -494,7 +497,7 @@ class Simulation {
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
                 const difference = cell.energy - cell.organic;
-                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic);
+                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic, this.limits);
                 const base = Math.min(capacity, difference / 2);
                 // Each bonus unit closes the gap by three: two energy spent, one organic gained.
                 const bonus = Math.min(capacity * boostFactor(cell.energy), Math.max(0, difference - 2 * base) / 3);
@@ -542,6 +545,12 @@ const clock = document.querySelector('#clock');
 const phase = document.querySelector('#phase');
 const stats = document.querySelector('#stats');
 const inspect = document.querySelector('#inspect');
+const limitsForm = document.querySelector('#limits');
+const limitStatus = document.querySelector('#limit-status');
+const soilLimitLabel = document.querySelector('#soil-limit-label');
+const settingKeys = Object.keys(DEFAULT_LIMITS);
+const cameraKeys = new Set();
+const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
@@ -553,7 +562,7 @@ const names = {
 };
 
 const deathEffects = new Map();
-let simulation = new Simulation(Math.random, recordDeath);
+let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
 let press = null;
@@ -570,15 +579,24 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = 1.4 + Math.min(cell.flow / CHANNEL_FLOW_LIMIT, 1) * 6.6;
+        context.lineWidth = 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6;
         context.lineCap = 'round';
         context.beginPath();
-        for (const index of simulation.neighbors(cell.index)) {
+        simulation.neighbors(cell.index).forEach((index, direction) => {
             const neighbor = simulation.cells.get(index);
-            if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
+            if (!neighbor || neighbor.colony.family !== cell.colony.family) return;
+            const [dx, dy] = DIRECTIONS[direction];
+            const nx = x + dx * scale;
+            const ny = y + dy * scale;
             context.moveTo(x, y);
-            context.lineTo((index % WIDTH + 0.5) * scale, (Math.floor(index / WIDTH) + 0.5) * scale);
-        }
+            context.lineTo(nx, ny);
+            const offsetX = nx < 0 ? field.width : nx >= field.width ? -field.width : 0;
+            const offsetY = ny < 0 ? field.height : ny >= field.height ? -field.height : 0;
+            if (offsetX || offsetY) {
+                context.moveTo(x + offsetX, y + offsetY);
+                context.lineTo(nx + offsetX, ny + offsetY);
+            }
+        });
         context.stroke();
         context.beginPath();
         context.arc(x, y, Math.max(1.5, context.lineWidth / 2), 0, Math.PI * 2);
@@ -655,13 +673,14 @@ function drawDeathEffects(now) {
 function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight } = simulation;
+    const soilLimit = simulation.limits.soil;
     for (let index = 0; index < energy.length; index++) {
-        const blue = Math.min(energy[index] / SOIL_LIMIT, 1);
-        const red = Math.min(organic[index] / SOIL_LIMIT, 1);
-        const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
+        const blue = Math.min(energy[index] / soilLimit, 1);
+        const red = Math.min(organic[index] / soilLimit, 1);
+        const green = Math.min(radiation[index] / soilLimit, 1);
         const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) >= SOIL_LIMIT ? 0.46 : 0;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
@@ -782,8 +801,8 @@ document.querySelector('#plant').addEventListener('click', () => {
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < WIDTH * HEIGHT; index++) {
-        if (simulation.cells.has(index) || simulation.energy[index] >= SOIL_LIMIT
-                || simulation.organic[index] >= SOIL_LIMIT) continue;
+        if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
+                || simulation.organic[index] >= simulation.limits.soil) continue;
         const distance = Math.abs(index % WIDTH - center % WIDTH)
             + Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
         if (distance < bestDistance) {
@@ -827,16 +846,68 @@ viewport.addEventListener('wheel', event => {
 }, { passive: false });
 const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
+function validLimits(limits) {
+    return limits && settingKeys.every(key => Number.isSafeInteger(limits[key])
+        && limits[key] >= (key === 'slowdown' ? 0 : 1)) && limits.slowdown < limits.stop;
+}
+
+function readLimits() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('wfo-limits'));
+        if (validLimits(stored)) return stored;
+    } catch {
+        // Some browsers restrict storage for local HTML files.
+    }
+    return DEFAULT_LIMITS;
+}
+
+function showLimits() {
+    for (const key of settingKeys) limitsForm.elements.namedItem(key).value = simulation.limits[key];
+    soilLimitLabel.textContent = simulation.limits.soil;
+}
+
+limitsForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const limits = Object.fromEntries(settingKeys.map(key => [key, limitsForm.elements.namedItem(key).valueAsNumber]));
+    if (!validLimits(limits)) {
+        limitStatus.textContent = 'Порог замедления должен быть ниже порога остановки.';
+        return;
+    }
+    simulation.limits = limits;
+    soilLimitLabel.textContent = limits.soil;
+    limitStatus.textContent = 'Применено';
+    try {
+        localStorage.setItem('wfo-limits', JSON.stringify(limits));
+    } catch {
+        // The new limits still apply to this session.
+    }
+});
+showLimits();
+
+window.addEventListener('keydown', event => {
+    if (!cameraBindings[event.code] || event.ctrlKey || event.metaKey || event.altKey
+            || event.target.closest?.('input, select, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    cameraKeys.add(event.code);
+});
+window.addEventListener('keyup', event => cameraKeys.delete(event.code));
+window.addEventListener('blur', () => cameraKeys.clear());
+
 speed.addEventListener('change', () => { elapsed = 0; });
 document.querySelector('#reset').addEventListener('click', () => {
     deathEffects.clear();
-    simulation = new Simulation(Math.random, recordDeath);
+    simulation = new Simulation(Math.random, recordDeath, simulation.limits);
     elapsed = 0;
     hovered = -1;
     planted = -1;
 });
 
 function frame(now) {
+    const delta = Math.min((now - previous) / 1000, 0.1);
+    for (const key of cameraKeys) {
+        const [dx, dy] = cameraBindings[key];
+        viewport.scrollBy(dx * delta * 420, dy * delta * 420);
+    }
     if (!paused) {
         const multiplier = Number(speed.value);
         elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,

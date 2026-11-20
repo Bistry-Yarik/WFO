@@ -1,28 +1,26 @@
 export const WIDTH = 100;
 export const HEIGHT = 64;
 export const STEP = 0.1;
-export const SOIL_LIMIT = 2500;
-export const CHANNEL_FLOW_LIMIT = 2500;
+export const DEFAULT_LIMITS = Object.freeze({
+    soil: 2500, flow: 2500, radiation: 5000, slowdown: 1000, stop: 1500
+});
 export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
 const GENOME_LENGTH = 9;
-const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+export const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
-const RADIATION_MUTATION_LIMIT = 5000;
 const DEATH_RADIATION = 300;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
 const BOOST_START = 900;
 const BOOST_FULL = 1400;
-const PRODUCTION_SLOWDOWN = 1000;
-const PRODUCTION_STOP = 1500;
 
-function productionFactor(stock) {
-    return Math.max(0, Math.min(1, (PRODUCTION_STOP - stock) / (PRODUCTION_STOP - PRODUCTION_SLOWDOWN)));
+function productionFactor(stock, { slowdown, stop }) {
+    return Math.max(0, Math.min(1, (stop - stock) / (stop - slowdown)));
 }
 function boostFactor(energy) {
     return Math.max(0, Math.min(1, (energy - BOOST_START) / (BOOST_FULL - BOOST_START)));
@@ -65,14 +63,19 @@ function randomGenome(random) {
     return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
 }
 
+function wrappedIndex(x, y) {
+    return ((y + HEIGHT) % HEIGHT) * WIDTH + (x + WIDTH) % WIDTH;
+}
+
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
 
 export class Simulation {
-    constructor(random = Math.random, onDeath = null) {
+    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS) {
         this.random = random;
         this.onDeath = onDeath;
+        this.limits = limits;
         this.cells = new Map();
         this.colonies = new Map();
         this.energy = new Float64Array(WIDTH * HEIGHT);
@@ -104,7 +107,7 @@ export class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random);
             }
         }
-        const exposure = Math.min(this.radiation[index] / RADIATION_MUTATION_LIMIT, 1);
+        const exposure = Math.min(this.radiation[index] / this.limits.radiation, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
             const locus = Math.floor(this.random() * (2 * genome.length + SEED_REQUIREMENT_TRAITS.length));
@@ -121,9 +124,9 @@ export class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random, seedNeeds[trait]);
             }
             this.mutations++;
-            for (let ny = Math.max(0, y - 1); ny <= Math.min(HEIGHT - 1, y + 1); ny++) {
-                for (let nx = Math.max(0, x - 1); nx <= Math.min(WIDTH - 1, x + 1); nx++) {
-                    this.radiation[ny * WIDTH + nx] /= 2;
+            for (let ny = y - 1; ny <= y + 1; ny++) {
+                for (let nx = x - 1; nx <= x + 1; nx++) {
+                    this.radiation[wrappedIndex(nx, ny)] /= 2;
                 }
             }
         }
@@ -148,26 +151,21 @@ export class Simulation {
     neighbors(index) {
         const x = index % WIDTH;
         const y = Math.floor(index / WIDTH);
-        return DIRECTIONS.map(([dx, dy]) => {
-            const nx = x + dx;
-            const ny = y + dy;
-            return nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT ? ny * WIDTH + nx : -1;
-        });
+        return DIRECTIONS.map(([dx, dy]) => wrappedIndex(x + dx, y + dy));
     }
 
     collect(cell, resource) {
         const ground = this[resource];
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
-        const base = 50 * STEP * productionFactor(cell[resource]);
+        const base = 50 * STEP * productionFactor(cell[resource], this.limits);
         const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
         let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
                 const ny = y + dy;
-                if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
-                const index = ny * WIDTH + nx;
+                const index = wrappedIndex(nx, ny);
                 const amount = Math.min(remaining, ground[index]);
                 ground[index] -= amount;
                 cell[resource] += amount;
@@ -187,31 +185,18 @@ export class Simulation {
             if (!amount) continue;
             const share = amount * fraction;
             const x = i % WIDTH;
-            let neighbors = 0;
-            if (x > 0) {
-                next[i - 1] += share;
-                neighbors++;
-            }
-            if (x < WIDTH - 1) {
-                next[i + 1] += share;
-                neighbors++;
-            }
-            if (i >= WIDTH) {
-                next[i - WIDTH] += share;
-                neighbors++;
-            }
-            if (i < ground.length - WIDTH) {
-                next[i + WIDTH] += share;
-                neighbors++;
-            }
-            next[i] += amount - share * neighbors;
+            next[x === 0 ? i + WIDTH - 1 : i - 1] += share;
+            next[x === WIDTH - 1 ? i - WIDTH + 1 : i + 1] += share;
+            next[i < WIDTH ? i + ground.length - WIDTH : i - WIDTH] += share;
+            next[i >= ground.length - WIDTH ? i - ground.length + WIDTH : i + WIDTH] += share;
+            next[i] += amount - 4 * share;
         }
         this[resource] = next;
         this.diffusionBuffers[resource] = ground;
     }
 
     bite(cell) {
-        const base = BITE_RATE * STEP * productionFactor(cell.organic);
+        const base = BITE_RATE * STEP * productionFactor(cell.organic, this.limits);
         const capacity = base * (1 + boostFactor(cell.energy));
         if (capacity === 0) return;
         for (const index of this.neighbors(cell.index)) {
@@ -233,11 +218,10 @@ export class Simulation {
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
             const [dx, dy] = THROW_OFFSETS[(start + i) % THROW_OFFSETS.length];
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
-            const index = ny * WIDTH + nx;
-            if (this.energy[index] >= SOIL_LIMIT || this.organic[index] >= SOIL_LIMIT) continue;
+            const index = wrappedIndex(x + dx, y + dy);
+            const nx = index % WIDTH;
+            const ny = Math.floor(index / WIDTH);
+            if (this.energy[index] >= this.limits.soil || this.organic[index] >= this.limits.soil) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -257,7 +241,7 @@ export class Simulation {
         const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
+        const index = ordered.find(candidate => !this.cells.has(candidate));
         if (index === undefined) return;
 
         if (type === 'seed') {
@@ -285,8 +269,8 @@ export class Simulation {
     removeToxicCells() {
         for (const cell of this.cells.values()) {
             const resources = resourceMask(
-                this.energy[cell.index] >= SOIL_LIMIT && cell.type !== 'energy',
-                this.organic[cell.index] >= SOIL_LIMIT && cell.type !== 'organic'
+                this.energy[cell.index] >= this.limits.soil && cell.type !== 'energy',
+                this.organic[cell.index] >= this.limits.soil && cell.type !== 'organic'
             );
             if (resources) this.drop(cell, 'excess', resources);
         }
@@ -311,7 +295,7 @@ export class Simulation {
                 const x = cell.index % WIDTH;
                 if (cell.type === 'chlorophyll') {
                     const lightRate = shadedColumns.has(x) ? 50 : 150;
-                    cell.energy += lightRate * STEP * productionFactor(cell.energy);
+                    cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
                 }
                 shadedColumns.add(x);
             }
@@ -352,7 +336,7 @@ export class Simulation {
 
         const overloaded = new Map();
         for (const cell of existing) {
-            if (cell.type === 'channel' && cell.flow > CHANNEL_FLOW_LIMIT) {
+            if (cell.type === 'channel' && cell.flow > this.limits.flow) {
                 overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
             }
         }
@@ -373,7 +357,7 @@ export class Simulation {
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
                 const difference = cell.energy - cell.organic;
-                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic);
+                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic, this.limits);
                 const base = Math.min(capacity, difference / 2);
                 // Each bonus unit closes the gap by three: two energy spent, one organic gained.
                 const bonus = Math.min(capacity * boostFactor(cell.energy), Math.max(0, difference - 2 * base) / 3);

@@ -1,4 +1,4 @@
-import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT, CHANNEL_FLOW_LIMIT, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
+import { Simulation, WIDTH, HEIGHT, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const context = field.getContext('2d');
@@ -21,6 +21,12 @@ const clock = document.querySelector('#clock');
 const phase = document.querySelector('#phase');
 const stats = document.querySelector('#stats');
 const inspect = document.querySelector('#inspect');
+const limitsForm = document.querySelector('#limits');
+const limitStatus = document.querySelector('#limit-status');
+const soilLimitLabel = document.querySelector('#soil-limit-label');
+const settingKeys = Object.keys(DEFAULT_LIMITS);
+const cameraKeys = new Set();
+const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
@@ -32,7 +38,7 @@ const names = {
 };
 
 const deathEffects = new Map();
-let simulation = new Simulation(Math.random, recordDeath);
+let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
 let press = null;
@@ -49,15 +55,24 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = 1.4 + Math.min(cell.flow / CHANNEL_FLOW_LIMIT, 1) * 6.6;
+        context.lineWidth = 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6;
         context.lineCap = 'round';
         context.beginPath();
-        for (const index of simulation.neighbors(cell.index)) {
+        simulation.neighbors(cell.index).forEach((index, direction) => {
             const neighbor = simulation.cells.get(index);
-            if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
+            if (!neighbor || neighbor.colony.family !== cell.colony.family) return;
+            const [dx, dy] = DIRECTIONS[direction];
+            const nx = x + dx * scale;
+            const ny = y + dy * scale;
             context.moveTo(x, y);
-            context.lineTo((index % WIDTH + 0.5) * scale, (Math.floor(index / WIDTH) + 0.5) * scale);
-        }
+            context.lineTo(nx, ny);
+            const offsetX = nx < 0 ? field.width : nx >= field.width ? -field.width : 0;
+            const offsetY = ny < 0 ? field.height : ny >= field.height ? -field.height : 0;
+            if (offsetX || offsetY) {
+                context.moveTo(x + offsetX, y + offsetY);
+                context.lineTo(nx + offsetX, ny + offsetY);
+            }
+        });
         context.stroke();
         context.beginPath();
         context.arc(x, y, Math.max(1.5, context.lineWidth / 2), 0, Math.PI * 2);
@@ -134,13 +149,14 @@ function drawDeathEffects(now) {
 function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight } = simulation;
+    const soilLimit = simulation.limits.soil;
     for (let index = 0; index < energy.length; index++) {
-        const blue = Math.min(energy[index] / SOIL_LIMIT, 1);
-        const red = Math.min(organic[index] / SOIL_LIMIT, 1);
-        const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
+        const blue = Math.min(energy[index] / soilLimit, 1);
+        const red = Math.min(organic[index] / soilLimit, 1);
+        const green = Math.min(radiation[index] / soilLimit, 1);
         const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) >= SOIL_LIMIT ? 0.46 : 0;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
@@ -261,8 +277,8 @@ document.querySelector('#plant').addEventListener('click', () => {
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < WIDTH * HEIGHT; index++) {
-        if (simulation.cells.has(index) || simulation.energy[index] >= SOIL_LIMIT
-                || simulation.organic[index] >= SOIL_LIMIT) continue;
+        if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
+                || simulation.organic[index] >= simulation.limits.soil) continue;
         const distance = Math.abs(index % WIDTH - center % WIDTH)
             + Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
         if (distance < bestDistance) {
@@ -306,16 +322,68 @@ viewport.addEventListener('wheel', event => {
 }, { passive: false });
 const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
+function validLimits(limits) {
+    return limits && settingKeys.every(key => Number.isSafeInteger(limits[key])
+        && limits[key] >= (key === 'slowdown' ? 0 : 1)) && limits.slowdown < limits.stop;
+}
+
+function readLimits() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('wfo-limits'));
+        if (validLimits(stored)) return stored;
+    } catch {
+        // Some browsers restrict storage for local HTML files.
+    }
+    return DEFAULT_LIMITS;
+}
+
+function showLimits() {
+    for (const key of settingKeys) limitsForm.elements.namedItem(key).value = simulation.limits[key];
+    soilLimitLabel.textContent = simulation.limits.soil;
+}
+
+limitsForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const limits = Object.fromEntries(settingKeys.map(key => [key, limitsForm.elements.namedItem(key).valueAsNumber]));
+    if (!validLimits(limits)) {
+        limitStatus.textContent = 'Порог замедления должен быть ниже порога остановки.';
+        return;
+    }
+    simulation.limits = limits;
+    soilLimitLabel.textContent = limits.soil;
+    limitStatus.textContent = 'Применено';
+    try {
+        localStorage.setItem('wfo-limits', JSON.stringify(limits));
+    } catch {
+        // The new limits still apply to this session.
+    }
+});
+showLimits();
+
+window.addEventListener('keydown', event => {
+    if (!cameraBindings[event.code] || event.ctrlKey || event.metaKey || event.altKey
+            || event.target.closest?.('input, select, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    cameraKeys.add(event.code);
+});
+window.addEventListener('keyup', event => cameraKeys.delete(event.code));
+window.addEventListener('blur', () => cameraKeys.clear());
+
 speed.addEventListener('change', () => { elapsed = 0; });
 document.querySelector('#reset').addEventListener('click', () => {
     deathEffects.clear();
-    simulation = new Simulation(Math.random, recordDeath);
+    simulation = new Simulation(Math.random, recordDeath, simulation.limits);
     elapsed = 0;
     hovered = -1;
     planted = -1;
 });
 
 function frame(now) {
+    const delta = Math.min((now - previous) / 1000, 0.1);
+    for (const key of cameraKeys) {
+        const [dx, dy] = cameraBindings[key];
+        viewport.scrollBy(dx * delta * 420, dy * delta * 420);
+    }
     if (!paused) {
         const multiplier = Number(speed.value);
         elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,
