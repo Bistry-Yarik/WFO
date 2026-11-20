@@ -1,4 +1,4 @@
-import { Simulation, WIDTH, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
+import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const screen = field.getContext('2d');
@@ -80,7 +80,7 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = Math.max(scale / camera.zoom, 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
+        context.lineWidth = Math.max(scale / viewScale(), 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
         context.lineCap = 'round';
         context.beginPath();
         simulation.neighbors(cell.index).forEach((index, direction) => {
@@ -100,7 +100,7 @@ function drawCell(cell) {
         });
         context.stroke();
         context.beginPath();
-        context.arc(x, y, Math.max(scale * 1.1 / camera.zoom, context.lineWidth / 2), 0, Math.PI * 2);
+        context.arc(x, y, Math.max(scale * 1.1 / viewScale(), context.lineWidth / 2), 0, Math.PI * 2);
         context.fill();
     } else if (cell.type === 'seed') {
         context.beginPath();
@@ -184,9 +184,13 @@ function drawDeathEffects(now, target = context) {
     target.restore();
 }
 
-function mapViewRect() {
-    const width = Math.min(field.width, simulation.width * camera.zoom);
-    const height = Math.min(field.height, simulation.height * camera.zoom);
+function viewScale() {
+    return camera.zoom * Math.min(field.width / simulation.width, field.height / simulation.height);
+}
+
+function mapViewRect(pixelsPerCell = viewScale()) {
+    const width = Math.min(field.width, simulation.width * pixelsPerCell);
+    const height = Math.min(field.height, simulation.height * pixelsPerCell);
     return { width, height, left: Math.floor((field.width - width) / 2), top: Math.floor((field.height - height) / 2) };
 }
 
@@ -220,11 +224,12 @@ function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
+    const pixelsPerCell = viewScale();
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = camera.zoom > OVERVIEW_MAX_ZOOM && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = pixelsPerCell > OVERVIEW_MAX_ZOOM && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -232,16 +237,16 @@ function draw() {
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 3] = 255;
     }
-    const tile = camera.zoom <= OVERVIEW_MAX_ZOOM ? drawOverview() : drawDetailedWorld();
-    const view = mapViewRect();
+    const tile = pixelsPerCell <= OVERVIEW_MAX_ZOOM ? drawOverview() : drawDetailedWorld();
+    const view = mapViewRect(pixelsPerCell);
     screen.fillStyle = '#101d18';
     screen.fillRect(0, 0, field.width, field.height);
-    const left = view.left - Math.round(camera.x * camera.zoom);
-    const top = view.top - Math.round(camera.y * camera.zoom);
+    const left = view.left - Math.round(camera.x * pixelsPerCell);
+    const top = view.top - Math.round(camera.y * pixelsPerCell);
     const pattern = screen.createPattern(tile, 'repeat');
     pattern.setTransform(new DOMMatrix().translate(left, top).scale(
-        simulation.width * camera.zoom / tile.width,
-        simulation.height * camera.zoom / tile.height
+        simulation.width * pixelsPerCell / tile.width,
+        simulation.height * pixelsPerCell / tile.height
     ));
     screen.fillStyle = pattern;
     screen.fillRect(view.left, view.top, view.width, view.height);
@@ -328,12 +333,13 @@ function moveCamera(dx, dy) {
 
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
-    const view = mapViewRect();
+    const pixelsPerCell = viewScale();
+    const view = mapViewRect(pixelsPerCell);
     const px = event.clientX - rect.left - view.left;
     const py = event.clientY - rect.top - view.top;
     if (px < 0 || py < 0 || px >= view.width || py >= view.height) return -1;
-    const x = Math.floor((px + Math.round(camera.x * camera.zoom)) / camera.zoom);
-    const y = Math.floor((py + Math.round(camera.y * camera.zoom)) / camera.zoom);
+    const x = Math.floor((px + Math.round(camera.x * pixelsPerCell)) / pixelsPerCell);
+    const y = Math.floor((py + Math.round(camera.y * pixelsPerCell)) / pixelsPerCell);
     return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
 }
 
@@ -363,7 +369,8 @@ if ('PointerEvent' in window) {
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
-        moveCamera(-dx / camera.zoom, -dy / camera.zoom);
+        const pixelsPerCell = viewScale();
+        moveCamera(-dx / pixelsPerCell, -dy / pixelsPerCell);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
@@ -417,16 +424,27 @@ pause.addEventListener('click', () => {
 function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
     const height = Math.max(1, viewport.clientHeight);
-    if (field.width !== width) field.width = width;
-    if (field.height !== height) field.height = height;
+    if (field.width === width && field.height === height) return;
+    const previousScale = viewScale();
+    const previousView = mapViewRect(previousScale);
+    field.width = width;
+    field.height = height;
+    const nextScale = viewScale();
+    const nextView = mapViewRect(nextScale);
+    moveCamera(
+        previousView.width / (2 * previousScale) - nextView.width / (2 * nextScale),
+        previousView.height / (2 * previousScale) - nextView.height / (2 * nextScale)
+    );
     screen.imageSmoothingEnabled = false;
 }
 
 function setZoom(value, anchorX, anchorY) {
-    const oldView = mapViewRect();
+    const previousScale = viewScale();
+    const oldView = mapViewRect(previousScale);
     const previousZoom = camera.zoom;
     camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
-    const newView = mapViewRect();
+    const nextScale = viewScale();
+    const newView = mapViewRect(nextScale);
     const oldX = Math.max(0, Math.min(oldView.width, (anchorX ?? field.width / 2) - oldView.left));
     const oldY = Math.max(0, Math.min(oldView.height, (anchorY ?? field.height / 2) - oldView.top));
     const newX = Math.max(0, Math.min(newView.width, (anchorX ?? field.width / 2) - newView.left));
@@ -434,7 +452,7 @@ function setZoom(value, anchorX, anchorY) {
     zoom.value = String(camera.zoom);
     zoomOut.disabled = zoom.selectedIndex === 0;
     zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
-    moveCamera(oldX / previousZoom - newX / camera.zoom, oldY / previousZoom - newY / camera.zoom);
+    moveCamera(oldX / previousScale - newX / nextScale, oldY / previousScale - newY / nextScale);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
@@ -453,8 +471,7 @@ field.addEventListener('wheel', event => {
     hovered = indexAt(event);
 }, { passive: false });
 sizeView();
-const fit = Math.max(1, Math.floor(viewport.clientWidth / WIDTH));
-setZoom(Math.min(Number(zoom.value), fit), 0, 0);
+setZoom(Number(zoom.value));
 new ResizeObserver(sizeView).observe(viewport);
 function validLimits(limits) {
     return limits && settingKeys.every(key => Number.isSafeInteger(limits[key])
@@ -569,7 +586,8 @@ function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
     for (const key of cameraKeys) {
         const [dx, dy] = cameraBindings[key];
-        moveCamera(dx * delta * 420 / camera.zoom, dy * delta * 420 / camera.zoom);
+        const distance = delta * 420 / viewScale();
+        moveCamera(dx * distance, dy * distance);
     }
     if (!paused) {
         const multiplier = Number(speed.value);
