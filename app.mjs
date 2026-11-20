@@ -34,9 +34,12 @@ const cameraKeys = new Set();
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const SIMULATION_SLICE_MS = 8;
+const FAST_SIMULATION_SLICE_MS = 16;
+const COMPUTE_PRIORITY_SPEED = 500;
 const CONTINUOUS_SPEED = 150;
 const simulationTasks = new MessageChannel();
 const FAST_DRAW_INTERVAL = 1000 / 30;
+const COMPUTE_PRIORITY_DRAW_INTERVAL = 1000 / 20;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
@@ -585,7 +588,8 @@ function runSimulationSlice(multiplier) {
     elapsed = Math.min(elapsed + (now - simulationUpdatedAt) / 1000 * multiplier,
         MAX_BACKLOG_SECONDS * multiplier + STEP);
     simulationUpdatedAt = now;
-    const deadline = now + SIMULATION_SLICE_MS;
+    const slice = multiplier >= COMPUTE_PRIORITY_SPEED ? FAST_SIMULATION_SLICE_MS : SIMULATION_SLICE_MS;
+    const deadline = now + slice;
     while (elapsed >= STEP && performance.now() < deadline) {
         simulation.tick();
         elapsed -= STEP;
@@ -621,7 +625,8 @@ function frame(now) {
         speedSampleAt = now;
         speedSampleTime = simulation.time;
     }
-    if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= FAST_DRAW_INTERVAL) {
+    const drawInterval = multiplier >= COMPUTE_PRIORITY_SPEED ? COMPUTE_PRIORITY_DRAW_INTERVAL : FAST_DRAW_INTERVAL;
+    if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= drawInterval) {
         draw();
         updateReadout();
         lastDraw = now;
