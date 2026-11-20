@@ -10,6 +10,7 @@ const terrainContext = terrain.getContext('2d');
 let terrainPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
+const actualSpeed = document.querySelector('#actual-speed');
 const zoom = document.querySelector('#zoom');
 const zoomLevels = Array.from(zoom.options, option => Number(option.value));
 const fieldSizeForm = document.querySelector('#field-size');
@@ -33,6 +34,8 @@ const cameraKeys = new Set();
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
+const FAST_SIMULATION_BUDGET = 12;
+const FAST_DRAW_INTERVAL = 1000 / 30;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
@@ -60,6 +63,9 @@ let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
+let lastDraw = 0;
+let speedSampleAt = previous;
+let speedSampleTime = 0;
 
 function configureWorldCanvas() {
     const { width, height } = simulation;
@@ -406,6 +412,7 @@ field.addEventListener('pointerleave', event => {
 pause.addEventListener('click', () => {
     paused = !paused;
     pause.textContent = paused ? 'Продолжить' : 'Пауза';
+    resetSpeedSample();
 });
 function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
@@ -531,7 +538,16 @@ window.addEventListener('keydown', event => {
 window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
-speed.addEventListener('change', () => { elapsed = 0; });
+function resetSpeedSample() {
+    speedSampleAt = performance.now();
+    speedSampleTime = simulation.time;
+    actualSpeed.textContent = '';
+}
+
+speed.addEventListener('change', () => {
+    elapsed = 0;
+    resetSpeedSample();
+});
 function restart(width) {
     const resized = simulation.width !== width;
     deathEffects.clear();
@@ -546,6 +562,7 @@ function restart(width) {
     planted = -1;
     fieldWidth.value = width;
     fieldSizeForm.hidden = false;
+    resetSpeedSample();
 }
 
 fieldSizeForm.addEventListener('submit', event => {
@@ -561,19 +578,29 @@ function frame(now) {
         const distance = delta * 420 / camera.zoom;
         moveCamera(dx * distance, dy * distance);
     }
+    const multiplier = Number(speed.value);
     if (!paused) {
-        const multiplier = Number(speed.value);
         elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,
             MAX_BACKLOG_SECONDS * multiplier + STEP);
-        const deadline = performance.now() + FRAME_SIMULATION_BUDGET;
+        const deadline = performance.now() + (multiplier > 250 ? FAST_SIMULATION_BUDGET : FRAME_SIMULATION_BUDGET);
         while (elapsed >= STEP && performance.now() < deadline) {
             simulation.tick();
             elapsed -= STEP;
         }
     }
     previous = now;
-    draw();
-    updateReadout();
+    if (!paused && now - speedSampleAt >= 750) {
+        const measured = (simulation.time - speedSampleTime) * 1000 / (now - speedSampleAt);
+        actualSpeed.textContent = multiplier > 1 && measured < multiplier * 0.9
+            ? `Фактически ≈${Math.round(measured)}×` : '';
+        speedSampleAt = now;
+        speedSampleTime = simulation.time;
+    }
+    if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= FAST_DRAW_INTERVAL) {
+        draw();
+        updateReadout();
+        lastDraw = now;
+    }
     requestAnimationFrame(frame);
 }
 

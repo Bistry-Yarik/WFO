@@ -28,7 +28,7 @@ function boostFactor(energy) {
 
 const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
-const SLOW_DIFFUSION_TICKS = 5;
+const DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 100;
 const CELL_COST = 300;
@@ -78,6 +78,7 @@ export class Simulation {
         this.colonies = new Map();
         this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
+        this.neighborCache = new Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.diffusionBuffers = {
             energy: new Float64Array(this.energy.length),
@@ -152,9 +153,14 @@ export class Simulation {
     }
 
     neighbors(index) {
-        const x = index % this.width;
-        const y = Math.floor(index / this.width);
-        return DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
+        let neighbors = this.neighborCache[index];
+        if (!neighbors) {
+            const x = index % this.width;
+            const y = Math.floor(index / this.width);
+            neighbors = DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
+            this.neighborCache[index] = neighbors;
+        }
+        return neighbors;
     }
 
     collect(cell, resource) {
@@ -183,17 +189,19 @@ export class Simulation {
         const ground = this[resource];
         const next = this.diffusionBuffers[resource];
         const fraction = DIFFUSION_RATES[resource] * duration;
-        next.fill(0);
-        for (let i = 0; i < ground.length; i++) {
-            const amount = ground[i];
-            if (!amount) continue;
-            const share = amount * fraction;
-            const x = i % width;
-            next[x === 0 ? i + width - 1 : i - 1] += share;
-            next[x === width - 1 ? i - width + 1 : i + 1] += share;
-            next[i < width ? i + ground.length - width : i - width] += share;
-            next[i >= ground.length - width ? i - ground.length + width : i + width] += share;
-            next[i] += amount - 4 * share;
+        for (let row = 0; row < ground.length; row += width) {
+            const end = row + width;
+            const above = row === 0 ? ground.length - width : row - width;
+            const below = end === ground.length ? 0 : end;
+            let left = ground[end - 1];
+            for (let index = row; index < end; index++) {
+                const amount = ground[index];
+                const right = ground[index + 1 === end ? row : index + 1];
+                const column = index - row;
+                const adjacent = left + right + ground[above + column] + ground[below + column];
+                next[index] = amount + (adjacent - 4 * amount) * fraction;
+                left = amount;
+            }
         }
         this[resource] = next;
         this.diffusionBuffers[resource] = ground;
@@ -294,13 +302,17 @@ export class Simulation {
         const tickNumber = Math.round(this.time / STEP) + 1;
         this.time = tickNumber * STEP;
         this.removeToxicCells();
-        this.diffuse('energy', STEP);
-        if (tickNumber % SLOW_DIFFUSION_TICKS === 0) {
-            const duration = STEP * SLOW_DIFFUSION_TICKS;
+        if (tickNumber % DIFFUSION_TICKS === 0) {
+            const duration = STEP * DIFFUSION_TICKS;
+            this.diffuse('energy', duration);
             this.diffuse('organic', duration);
             this.diffuse('radiation', duration);
         }
         this.removeToxicCells();
+        if (this.cells.size === 0) {
+            this.colonies.clear();
+            return;
+        }
         const existing = [...this.cells.values()];
         const shadedColumns = new Set();
         if (this.daylight) {

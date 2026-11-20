@@ -93,6 +93,9 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #field-size { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 12px; }
 #field-size[hidden] { display: none; }
 #field-width { width: 5em; min-height: 36px; font: inherit; }
+
+.speed-status { color: var(--muted); font-size: 13px; }
+.speed-status:empty { display: none; }
 </style>
 </head>
 <body>
@@ -106,6 +109,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <button id="plant" type="button">Посадить семечко</button>
                     <button id="pause" type="button">Пауза</button>
                     <label>Скорость <select id="speed"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option><option value="25">25×</option><option value="50">50×</option><option value="100">100×</option><option value="150">150×</option><option value="250">250×</option><option value="500">500×</option><option value="750">750×</option><option value="1000">1000×</option></select></label>
+                    <span id="actual-speed" class="speed-status"></span>
                     <div class="zoom-controls" role="group" aria-label="Масштаб">
                         <button id="zoom-out" type="button" aria-label="Уменьшить масштаб">−</button>
                         <select id="zoom" aria-label="Масштаб"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option><option value="6">6×</option><option value="7">7×</option><option value="8">8×</option><option value="9">9×</option><option value="10">10×</option><option value="15">15×</option><option value="20">20×</option><option value="30">30×</option></select>
@@ -193,7 +197,7 @@ function boostFactor(energy) {
 
 const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
-const SLOW_DIFFUSION_TICKS = 5;
+const DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 100;
 const CELL_COST = 300;
@@ -243,6 +247,7 @@ class Simulation {
         this.colonies = new Map();
         this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
+        this.neighborCache = new Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.diffusionBuffers = {
             energy: new Float64Array(this.energy.length),
@@ -317,9 +322,14 @@ class Simulation {
     }
 
     neighbors(index) {
-        const x = index % this.width;
-        const y = Math.floor(index / this.width);
-        return DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
+        let neighbors = this.neighborCache[index];
+        if (!neighbors) {
+            const x = index % this.width;
+            const y = Math.floor(index / this.width);
+            neighbors = DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
+            this.neighborCache[index] = neighbors;
+        }
+        return neighbors;
     }
 
     collect(cell, resource) {
@@ -348,17 +358,19 @@ class Simulation {
         const ground = this[resource];
         const next = this.diffusionBuffers[resource];
         const fraction = DIFFUSION_RATES[resource] * duration;
-        next.fill(0);
-        for (let i = 0; i < ground.length; i++) {
-            const amount = ground[i];
-            if (!amount) continue;
-            const share = amount * fraction;
-            const x = i % width;
-            next[x === 0 ? i + width - 1 : i - 1] += share;
-            next[x === width - 1 ? i - width + 1 : i + 1] += share;
-            next[i < width ? i + ground.length - width : i - width] += share;
-            next[i >= ground.length - width ? i - ground.length + width : i + width] += share;
-            next[i] += amount - 4 * share;
+        for (let row = 0; row < ground.length; row += width) {
+            const end = row + width;
+            const above = row === 0 ? ground.length - width : row - width;
+            const below = end === ground.length ? 0 : end;
+            let left = ground[end - 1];
+            for (let index = row; index < end; index++) {
+                const amount = ground[index];
+                const right = ground[index + 1 === end ? row : index + 1];
+                const column = index - row;
+                const adjacent = left + right + ground[above + column] + ground[below + column];
+                next[index] = amount + (adjacent - 4 * amount) * fraction;
+                left = amount;
+            }
         }
         this[resource] = next;
         this.diffusionBuffers[resource] = ground;
@@ -459,13 +471,17 @@ class Simulation {
         const tickNumber = Math.round(this.time / STEP) + 1;
         this.time = tickNumber * STEP;
         this.removeToxicCells();
-        this.diffuse('energy', STEP);
-        if (tickNumber % SLOW_DIFFUSION_TICKS === 0) {
-            const duration = STEP * SLOW_DIFFUSION_TICKS;
+        if (tickNumber % DIFFUSION_TICKS === 0) {
+            const duration = STEP * DIFFUSION_TICKS;
+            this.diffuse('energy', duration);
             this.diffuse('organic', duration);
             this.diffuse('radiation', duration);
         }
         this.removeToxicCells();
+        if (this.cells.size === 0) {
+            this.colonies.clear();
+            return;
+        }
         const existing = [...this.cells.values()];
         const shadedColumns = new Set();
         if (this.daylight) {
@@ -573,6 +589,7 @@ const terrainContext = terrain.getContext('2d');
 let terrainPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
+const actualSpeed = document.querySelector('#actual-speed');
 const zoom = document.querySelector('#zoom');
 const zoomLevels = Array.from(zoom.options, option => Number(option.value));
 const fieldSizeForm = document.querySelector('#field-size');
@@ -596,6 +613,8 @@ const cameraKeys = new Set();
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const FRAME_SIMULATION_BUDGET = 8;
+const FAST_SIMULATION_BUDGET = 12;
+const FAST_DRAW_INTERVAL = 1000 / 30;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
@@ -623,6 +642,9 @@ let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
+let lastDraw = 0;
+let speedSampleAt = previous;
+let speedSampleTime = 0;
 
 function configureWorldCanvas() {
     const { width, height } = simulation;
@@ -969,6 +991,7 @@ field.addEventListener('pointerleave', event => {
 pause.addEventListener('click', () => {
     paused = !paused;
     pause.textContent = paused ? 'Продолжить' : 'Пауза';
+    resetSpeedSample();
 });
 function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
@@ -1094,7 +1117,16 @@ window.addEventListener('keydown', event => {
 window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
-speed.addEventListener('change', () => { elapsed = 0; });
+function resetSpeedSample() {
+    speedSampleAt = performance.now();
+    speedSampleTime = simulation.time;
+    actualSpeed.textContent = '';
+}
+
+speed.addEventListener('change', () => {
+    elapsed = 0;
+    resetSpeedSample();
+});
 function restart(width) {
     const resized = simulation.width !== width;
     deathEffects.clear();
@@ -1109,6 +1141,7 @@ function restart(width) {
     planted = -1;
     fieldWidth.value = width;
     fieldSizeForm.hidden = false;
+    resetSpeedSample();
 }
 
 fieldSizeForm.addEventListener('submit', event => {
@@ -1124,19 +1157,29 @@ function frame(now) {
         const distance = delta * 420 / camera.zoom;
         moveCamera(dx * distance, dy * distance);
     }
+    const multiplier = Number(speed.value);
     if (!paused) {
-        const multiplier = Number(speed.value);
         elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,
             MAX_BACKLOG_SECONDS * multiplier + STEP);
-        const deadline = performance.now() + FRAME_SIMULATION_BUDGET;
+        const deadline = performance.now() + (multiplier > 250 ? FAST_SIMULATION_BUDGET : FRAME_SIMULATION_BUDGET);
         while (elapsed >= STEP && performance.now() < deadline) {
             simulation.tick();
             elapsed -= STEP;
         }
     }
     previous = now;
-    draw();
-    updateReadout();
+    if (!paused && now - speedSampleAt >= 750) {
+        const measured = (simulation.time - speedSampleTime) * 1000 / (now - speedSampleAt);
+        actualSpeed.textContent = multiplier > 1 && measured < multiplier * 0.9
+            ? `Фактически ≈${Math.round(measured)}×` : '';
+        speedSampleAt = now;
+        speedSampleTime = simulation.time;
+    }
+    if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= FAST_DRAW_INTERVAL) {
+        draw();
+        updateReadout();
+        lastDraw = now;
+    }
     requestAnimationFrame(frame);
 }
 
