@@ -22,7 +22,7 @@ const RADIATION_CLEANUP_MAX_RATE = 100;
 const STRONG_RADIATION = 750;
 const ORGANIC_THIRST_THRESHOLD = 100;
 const ENERGY_UPKEEP = 5;
-const ORGANIC_UPKEEP = 2;
+const ORGANIC_UPKEEP = 1;
 const BOOST_START = 900;
 const BOOST_FULL = 1400;
 
@@ -40,11 +40,12 @@ const CYCLE_LENGTH = 600;
 const DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 100;
-const CELL_COST = 300;
-const SEED_COST = { energy: 225, organic: 75 };
-const THROWN_SEED_COST = { energy: 675, organic: SEED_COST.organic };
+const CELL_COST = { energy: 225, organic: 300 };
+const CHANNEL_COST = { energy: 40, organic: 50 };
+const SEED_COST = { energy: 170, organic: 75 };
+const THROWN_SEED_COST = { energy: 500, organic: SEED_COST.organic };
 const SEED_THROW_RANGE = 6;
-const SEED_REQUIREMENT_BASE = { energy: 300, organic: 100, throwEnergy: 900 };
+const SEED_REQUIREMENT_BASE = { energy: 225, organic: 100, throwEnergy: 675 };
 const SEED_REQUIREMENT_TRAITS = Object.keys(SEED_REQUIREMENT_BASE);
 
 function randomRequirement(base, random, previous) {
@@ -154,15 +155,16 @@ export class Simulation {
             reserveCells: 0
         };
         this.colonies.set(id, colony);
-        const seed = this.makeCell(index, 'seed', colony, parent ? cost.energy : 1350);
-        if (parent) seed.organic = cost.organic;
+        const seed = parent
+            ? this.makeCell(index, 'seed', colony, cost.energy, cost.organic)
+            : this.makeCell(index, 'seed', colony, 1350);
         this.cells.set(index, seed);
         this.tickCells = null;
         return true;
     }
 
-    makeCell(index, type, colony, reserve) {
-        return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
+    makeCell(index, type, colony, energy, organic = energy) {
+        return { index, type, colony, energy, organic, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
     wrappedIndex(x, y) {
@@ -298,8 +300,8 @@ export class Simulation {
             return;
         }
         const neighbors = this.neighbors(cell.index);
-        const cost = type === 'channel' ? 50 : CELL_COST;
-        const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
+        const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
+        const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const index = ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
@@ -320,12 +322,12 @@ export class Simulation {
             cell.energy -= SEED_COST.energy;
             cell.organic -= SEED_COST.organic;
         } else {
-            const child = this.makeCell(index, type, cell.colony, cost);
+            const child = this.makeCell(index, type, cell.colony, cost.energy, cost.organic);
             if (type === 'channel') child.gene = cell.gene + 1;
             this.cells.set(index, child);
             this.tickCells = null;
-            cell.energy -= cost;
-            cell.organic -= cost;
+            cell.energy -= cost.energy;
+            cell.organic -= cost.organic;
         }
         cell.gene++;
     }
