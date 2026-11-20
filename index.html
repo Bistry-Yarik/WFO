@@ -54,6 +54,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .converter { background: #c58aff; clip-path: polygon(50% 0, 98% 35%, 80% 100%, 20% 100%, 2% 35%); }
 .soil-energy { background: #2357a5; }
 .soil-organic { background: #a43444; }
+.soil-radiation { background: #28b83c; }
 @media (max-width: 800px) {
     .layout { grid-template-columns: minmax(0, 1fr); }
     aside { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
@@ -104,8 +105,13 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <li><i class="teeth"></i>Зубы</li>
                 </ul>
             </section>
-            <section><h2>Опасная почва</h2>
-                <ul class="legend"><li><i class="soil-energy"></i>Энергия &gt; 5000 · выживает синий сборщик</li><li><i class="soil-organic"></i>Органика &gt; 5000 · выживает красный сборщик</li></ul>
+            <section><h2>Ресурсы в почве</h2>
+                <ul class="legend">
+                    <li><i class="soil-energy"></i>Энергия</li>
+                    <li><i class="soil-organic"></i>Органика</li>
+                    <li><i class="soil-radiation"></i>Радиация повышает шанс мутации</li>
+                    <li>Выше 5000 оттенок бледнеет</li>
+                </ul>
             </section>
         </aside>
     </div>
@@ -121,6 +127,9 @@ const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
+const MAX_MUTATION_CHANCE = 0.5;
+const DEATH_RADIATION = 300;
+const SEED_ORGANIC_DIVISOR = 3;
 const CONVERSION_RATE = 50;
 const BITE_RATE = 50;
 const SEED_COST = 300;
@@ -139,6 +148,7 @@ class Simulation {
         this.cells = new Map();
         this.colonies = new Map();
         this.energy = new Float64Array(WIDTH * HEIGHT);
+        this.radiation = new Float64Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.time = 0;
         this.totalSeeds = 0;
@@ -158,11 +168,18 @@ class Simulation {
             'chlorophyll', 'organic', 'channel',
             'seed', TYPES[Math.floor(this.random() * TYPES.length)]
         ];
-        if (parent && this.random() < MUTATION_CHANCE) {
+        const exposure = Math.min(this.radiation[index] / SOIL_LIMIT, 1);
+        const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
+        if (parent && this.random() < mutationChance) {
             const locus = Math.floor(this.random() * genome.length);
             const alternatives = TYPES.filter(type => type !== genome[locus]);
             genome[locus] = alternatives[Math.floor(this.random() * alternatives.length)];
             this.mutations++;
+            for (let ny = Math.max(0, y - 1); ny <= Math.min(HEIGHT - 1, y + 1); ny++) {
+                for (let nx = Math.max(0, x - 1); nx <= Math.min(WIDTH - 1, x + 1); nx++) {
+                    this.radiation[ny * WIDTH + nx] /= 2;
+                }
+            }
         }
         const colony = {
             id,
@@ -172,7 +189,9 @@ class Simulation {
             orientation: parent?.orientation ?? Math.floor(this.random() * 4)
         };
         this.colonies.set(id, colony);
-        this.cells.set(index, this.makeCell(index, 'seed', colony, reserve));
+        const seed = this.makeCell(index, 'seed', colony, reserve);
+        if (parent) seed.organic /= SEED_ORGANIC_DIVISOR;
+        this.cells.set(index, seed);
         return true;
     }
 
@@ -209,12 +228,12 @@ class Simulation {
         }
     }
 
-    diffuse() {
-        const next = new Float64Array(this.energy.length);
-        for (let i = 0; i < this.energy.length; i++) {
-            const amount = this.energy[i];
+    diffuse(ground, rate) {
+        const next = new Float64Array(ground.length);
+        for (let i = 0; i < ground.length; i++) {
+            const amount = ground[i];
             if (!amount) continue;
-            const share = amount * 0.06 * STEP;
+            const share = amount * rate * STEP;
             let retained = amount;
             for (const neighbor of this.neighbors(i)) {
                 if (neighbor < 0) continue;
@@ -223,7 +242,7 @@ class Simulation {
             }
             next[i] += retained;
         }
-        this.energy = next;
+        return next;
     }
 
     bite(cell) {
@@ -238,7 +257,8 @@ class Simulation {
     }
 
     throwSeed(cell) {
-        if (cell.energy < THROWN_SEED_COST || cell.organic < THROWN_SEED_COST) return false;
+        const organicCost = THROWN_SEED_COST / SEED_ORGANIC_DIVISOR;
+        if (cell.energy < THROWN_SEED_COST || cell.organic < organicCost) return false;
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
@@ -251,7 +271,7 @@ class Simulation {
             if (this.energy[index] > SOIL_LIMIT || this.organic[index] > SOIL_LIMIT) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST;
-            cell.organic -= THROWN_SEED_COST;
+            cell.organic -= organicCost;
             return true;
         }
         return false;
@@ -265,7 +285,8 @@ class Simulation {
         }
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? 50 : SEED_COST;
-        if (cell.energy < cost || cell.organic < cost) return;
+        const organicCost = type === 'seed' ? cost / SEED_ORGANIC_DIVISOR : cost;
+        if (cell.energy < cost || cell.organic < organicCost) return;
         const rotation = (cell.colony.orientation + cell.gene) % 4;
         const ordered = neighbors.slice(rotation).concat(neighbors.slice(0, rotation));
         const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
@@ -279,11 +300,12 @@ class Simulation {
             this.cells.set(index, child);
         }
         cell.energy -= cost;
-        cell.organic -= cost;
+        cell.organic -= organicCost;
         cell.gene++;
     }
 
     drop(cell) {
+        this.radiation[cell.index] += DEATH_RADIATION;
         this.energy[cell.index] += cell.energy;
         this.organic[cell.index] += cell.organic;
         this.cells.delete(cell.index);
@@ -303,7 +325,8 @@ class Simulation {
     tick() {
         this.time += STEP;
         this.removeToxicCells();
-        this.diffuse();
+        this.energy = this.diffuse(this.energy, 0.06);
+        this.radiation = this.diffuse(this.radiation, 0.02);
         this.removeToxicCells();
         const existing = [...this.cells.values()];
         const shadedColumns = new Set();
@@ -390,6 +413,12 @@ class Simulation {
 const field = document.querySelector('#field');
 const context = field.getContext('2d');
 const scale = field.width / WIDTH;
+const terrain = document.createElement('canvas');
+terrain.width = WIDTH;
+terrain.height = HEIGHT;
+const terrainContext = terrain.getContext('2d');
+const terrainPixels = terrainContext.createImageData(WIDTH, HEIGHT);
+context.imageSmoothingEnabled = false;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
@@ -469,26 +498,22 @@ function drawCell(cell) {
 }
 
 function draw() {
-    context.fillStyle = simulation.daylight ? '#101d18' : '#0b1320';
-    context.fillRect(0, 0, field.width, field.height);
-    for (let index = 0; index < simulation.energy.length; index++) {
-        const x = (index % WIDTH) * scale;
-        const y = Math.floor(index / WIDTH) * scale;
-        if ((index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0) {
-            context.fillStyle = '#ffffff06';
-            context.fillRect(x, y, scale, scale);
-        }
-        const energy = simulation.energy[index] > SOIL_LIMIT;
-        const organic = simulation.organic[index] > SOIL_LIMIT;
-        if (organic) {
-            context.fillStyle = '#a43444';
-            context.fillRect(x, y, scale, scale);
-        }
-        if (energy) {
-            context.fillStyle = '#2357a5';
-            context.fillRect(x, y, organic ? scale / 2 : scale, scale);
-        }
+    const pixels = terrainPixels.data;
+    const { energy, organic, radiation, daylight } = simulation;
+    for (let index = 0; index < energy.length; index++) {
+        const blue = Math.min(energy[index] / SOIL_LIMIT, 1);
+        const red = Math.min(organic[index] / SOIL_LIMIT, 1);
+        const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
+        const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
+        const offset = index * 4;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) > SOIL_LIMIT ? 0.46 : 0;
+        pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 3] = 255;
     }
+    terrainContext.putImageData(terrainPixels, 0, 0);
+    context.drawImage(terrain, 0, 0, field.width, field.height);
     for (const cell of simulation.cells.values()) {
         if (cell.type === 'channel') drawCell(cell);
     }
@@ -533,7 +558,7 @@ function updateReadout() {
         return;
     }
     const cell = simulation.cells.get(hovered);
-    const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])}`;
+    const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     inspect.textContent = cell
         ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)} · ${soil}`
         : soil;

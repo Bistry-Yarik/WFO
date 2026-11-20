@@ -3,6 +3,12 @@ import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT } from './simulation.mjs';
 const field = document.querySelector('#field');
 const context = field.getContext('2d');
 const scale = field.width / WIDTH;
+const terrain = document.createElement('canvas');
+terrain.width = WIDTH;
+terrain.height = HEIGHT;
+const terrainContext = terrain.getContext('2d');
+const terrainPixels = terrainContext.createImageData(WIDTH, HEIGHT);
+context.imageSmoothingEnabled = false;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
@@ -82,26 +88,22 @@ function drawCell(cell) {
 }
 
 function draw() {
-    context.fillStyle = simulation.daylight ? '#101d18' : '#0b1320';
-    context.fillRect(0, 0, field.width, field.height);
-    for (let index = 0; index < simulation.energy.length; index++) {
-        const x = (index % WIDTH) * scale;
-        const y = Math.floor(index / WIDTH) * scale;
-        if ((index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0) {
-            context.fillStyle = '#ffffff06';
-            context.fillRect(x, y, scale, scale);
-        }
-        const energy = simulation.energy[index] > SOIL_LIMIT;
-        const organic = simulation.organic[index] > SOIL_LIMIT;
-        if (organic) {
-            context.fillStyle = '#a43444';
-            context.fillRect(x, y, scale, scale);
-        }
-        if (energy) {
-            context.fillStyle = '#2357a5';
-            context.fillRect(x, y, organic ? scale / 2 : scale, scale);
-        }
+    const pixels = terrainPixels.data;
+    const { energy, organic, radiation, daylight } = simulation;
+    for (let index = 0; index < energy.length; index++) {
+        const blue = Math.min(energy[index] / SOIL_LIMIT, 1);
+        const red = Math.min(organic[index] / SOIL_LIMIT, 1);
+        const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
+        const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
+        const offset = index * 4;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) > SOIL_LIMIT ? 0.46 : 0;
+        pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 3] = 255;
     }
+    terrainContext.putImageData(terrainPixels, 0, 0);
+    context.drawImage(terrain, 0, 0, field.width, field.height);
     for (const cell of simulation.cells.values()) {
         if (cell.type === 'channel') drawCell(cell);
     }
@@ -146,7 +148,7 @@ function updateReadout() {
         return;
     }
     const cell = simulation.cells.get(hovered);
-    const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])}`;
+    const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     inspect.textContent = cell
         ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)} · ${soil}`
         : soil;
