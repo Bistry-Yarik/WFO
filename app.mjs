@@ -33,8 +33,9 @@ const settingKeys = Object.keys(DEFAULT_LIMITS);
 const cameraKeys = new Set();
 const camera = { x: 0, y: 0, zoom: 1 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
-const FRAME_SIMULATION_BUDGET = 8;
-const FAST_SIMULATION_BUDGET = 12;
+const SIMULATION_SLICE_MS = 8;
+const CONTINUOUS_SPEED = 150;
+const simulationTasks = new MessageChannel();
 const FAST_DRAW_INTERVAL = 1000 / 30;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
@@ -63,6 +64,8 @@ let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
+let simulationUpdatedAt = previous;
+let simulationTaskPending = false;
 let lastDraw = 0;
 let speedSampleAt = previous;
 let speedSampleTime = 0;
@@ -539,15 +542,15 @@ window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
 function resetSpeedSample() {
-    speedSampleAt = performance.now();
+    elapsed = 0;
+    simulationUpdatedAt = performance.now();
+    speedSampleAt = simulationUpdatedAt;
     speedSampleTime = simulation.time;
     actualSpeed.textContent = '';
 }
 
-speed.addEventListener('change', () => {
-    elapsed = 0;
-    resetSpeedSample();
-});
+speed.addEventListener('change', resetSpeedSample);
+document.addEventListener('visibilitychange', resetSpeedSample);
 function restart(width) {
     const resized = simulation.width !== width;
     deathEffects.clear();
@@ -557,7 +560,6 @@ function restart(width) {
         camera.y = 0;
         configureWorldCanvas();
     }
-    elapsed = 0;
     hovered = -1;
     planted = -1;
     fieldWidth.value = width;
@@ -571,6 +573,28 @@ fieldSizeForm.addEventListener('submit', event => {
 });
 document.querySelector('#reset').addEventListener('click', () => restart(simulation.width));
 
+function runSimulationSlice(multiplier) {
+    const now = performance.now();
+    elapsed = Math.min(elapsed + (now - simulationUpdatedAt) / 1000 * multiplier,
+        MAX_BACKLOG_SECONDS * multiplier + STEP);
+    simulationUpdatedAt = now;
+    const deadline = now + SIMULATION_SLICE_MS;
+    while (elapsed >= STEP && performance.now() < deadline) {
+        simulation.tick();
+        elapsed -= STEP;
+    }
+    if (multiplier >= CONTINUOUS_SPEED && elapsed >= STEP) {
+        simulationTaskPending = true;
+        simulationTasks.port2.postMessage(null);
+    }
+}
+
+simulationTasks.port1.onmessage = () => {
+    simulationTaskPending = false;
+    const multiplier = Number(speed.value);
+    if (!paused && !document.hidden && multiplier >= CONTINUOUS_SPEED) runSimulationSlice(multiplier);
+};
+
 function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
     for (const key of cameraKeys) {
@@ -579,14 +603,8 @@ function frame(now) {
         moveCamera(dx * distance, dy * distance);
     }
     const multiplier = Number(speed.value);
-    if (!paused) {
-        elapsed = Math.min(elapsed + (now - previous) / 1000 * multiplier,
-            MAX_BACKLOG_SECONDS * multiplier + STEP);
-        const deadline = performance.now() + (multiplier > 250 ? FAST_SIMULATION_BUDGET : FRAME_SIMULATION_BUDGET);
-        while (elapsed >= STEP && performance.now() < deadline) {
-            simulation.tick();
-            elapsed -= STEP;
-        }
+    if (!paused && !document.hidden && !simulationTaskPending) {
+        runSimulationSlice(multiplier);
     }
     previous = now;
     if (!paused && now - speedSampleAt >= 750) {
