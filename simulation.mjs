@@ -18,6 +18,7 @@ const DEATH_RADIATION = 300;
 const MUTATION_RADIATION_DIVISOR = 1.5;
 const CONVERSION_RATE = 150;
 const RADIATION_CLEANUP_RATE = 50;
+const CLEANUP_ENERGY_PER_RADIATION = 10 / 50;
 const RADIATION_CLEANUP_MAX_RATE = 100;
 const STRONG_RADIATION = 750;
 const ORGANIC_THIRST_THRESHOLD = 100;
@@ -207,8 +208,6 @@ export class Simulation {
     cleanRadiation(cell) {
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
-        const available = cell.energy - 2 * ENERGY_UPKEEP * STEP;
-        if (available <= 0) return;
         let strongest = 0;
         for (let dy = -1; dy <= 1; dy++) {
             for (let dx = -1; dx <= 1; dx++) {
@@ -216,7 +215,7 @@ export class Simulation {
             }
         }
         const rate = strongest >= STRONG_RADIATION ? RADIATION_CLEANUP_MAX_RATE : RADIATION_CLEANUP_RATE;
-        const budget = Math.min(rate * STEP, available);
+        const budget = rate * STEP;
         let remaining = budget;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
@@ -226,7 +225,7 @@ export class Simulation {
                 remaining -= removed;
             }
         }
-        cell.energy -= budget - remaining;
+        cell.energy += (budget - remaining) * CLEANUP_ENERGY_PER_RADIATION;
     }
 
     diffuse(resource, duration) {
