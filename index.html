@@ -264,7 +264,6 @@ function randomGenome(random) {
 }
 
 const SPECIAL_PACKS = {
-    cleanup: ['cleaner', 'converter', 'channel', 'cleaner', 'converter', 'chlorophyll', 'cleaner', 'converter', 'seed'],
     solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed']
 };
 
@@ -276,6 +275,23 @@ function packGenome(pack, random) {
             { type: 'adaptive', direction: (heading + 1) % 4, preferBuild: true },
             { type: 'teeth', direction: (heading + 3) % 4, preferBuild: true },
             { type: 'chlorophyll', direction: (heading + 3) % 4 }
+        ];
+    }
+    if (pack === 'cleanup') {
+        const heading = Math.floor(random() * DIRECTIONS.length);
+        const left = (heading + 3) % 4;
+        const right = (heading + 1) % 4;
+        return [
+            { type: 'cleaner', direction: heading, preferBuild: true, seekRadiation: true },
+            { type: 'converter', direction: (heading + 2) % 4, preferBuild: true },
+            { type: 'channel', direction: left, preferBuild: true, seekRadiation: true, branchStep: 0 },
+            { type: 'channel', direction: right, preferBuild: true, seekRadiation: true, branchStep: 0 },
+            { type: 'cleaner', direction: left, preferBuild: true, seekRadiation: true },
+            { type: 'converter', direction: right },
+            { type: 'chlorophyll', direction: heading },
+            { type: 'cleaner', direction: right, preferBuild: true, seekRadiation: true },
+            { type: 'converter', direction: left },
+            { type: 'seed', direction: heading }
         ];
     }
     const types = SPECIAL_PACKS[pack];
@@ -533,14 +549,35 @@ class Simulation {
         return energy > organic ? 'energy' : 'organic';
     }
 
+    radiationGrowthSite(candidates) {
+        let site;
+        let best = -1;
+        for (const candidate of candidates) {
+            if (this.cells.has(candidate) || !this.isSeedSiteSafe(candidate)) continue;
+            const x = candidate % this.width;
+            const y = Math.floor(candidate / this.width);
+            let radiation = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    radiation += this.radiation[this.wrappedIndex(x + dx, y + dy)];
+                }
+            }
+            if (radiation > best) {
+                best = radiation;
+                site = candidate;
+            }
+        }
+        return site;
+    }
+
     grow(cell) {
         if (cell.colony.thirsty) return;
-        const { type, direction, preferBuild, branchStep } = cell.colony.genome[cell.gene % cell.colony.genome.length];
+        const { type, direction, preferBuild, branchStep, seekRadiation } = cell.colony.genome[cell.gene % cell.colony.genome.length];
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const index = ordered.find(candidate => {
+        const index = seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
             if (type !== 'teeth') return true;
             return this.neighbors(candidate).some(adjacent => {
@@ -555,7 +592,7 @@ class Simulation {
             return;
         }
         if (index === undefined) {
-            if (type === 'teeth') cell.gene++;
+            if (type === 'teeth' || seekRadiation) cell.gene++;
             return;
         }
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
@@ -1074,8 +1111,8 @@ function updateReadout() {
     if (cell?.type === 'channel') {
         const { genome } = cell.colony;
         const step = cell.gene % genome.length;
-        const { type, direction } = genome[step];
-        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${directionIcons[direction]}`
+        const { type, direction, seekRadiation } = genome[step];
+        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell

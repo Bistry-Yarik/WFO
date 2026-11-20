@@ -324,8 +324,8 @@ function updateReadout() {
     if (cell?.type === 'channel') {
         const { genome } = cell.colony;
         const step = cell.gene % genome.length;
-        const { type, direction } = genome[step];
-        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${directionIcons[direction]}`
+        const { type, direction, seekRadiation } = genome[step];
+        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
