@@ -1,7 +1,7 @@
 export const WIDTH = 100;
 export const HEIGHT = 64;
 export const STEP = 0.1;
-export const SOIL_LIMIT = 5000;
+export const SOIL_LIMIT = 2500;
 export const CHANNEL_FLOW_LIMIT = 2500;
 export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
@@ -10,6 +10,7 @@ const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
+const RADIATION_MUTATION_LIMIT = 5000;
 const DEATH_RADIATION = 300;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
@@ -94,7 +95,7 @@ export class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random);
             }
         }
-        const exposure = Math.min(this.radiation[index] / SOIL_LIMIT, 1);
+        const exposure = Math.min(this.radiation[index] / RADIATION_MUTATION_LIMIT, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
             const locus = Math.floor(this.random() * (genome.length + SEED_REQUIREMENT_TRAITS.length));
@@ -223,7 +224,7 @@ export class Simulation {
             const ny = y + dy;
             if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
             const index = ny * WIDTH + nx;
-            if (this.energy[index] > SOIL_LIMIT || this.organic[index] > SOIL_LIMIT) continue;
+            if (this.energy[index] >= SOIL_LIMIT || this.organic[index] >= SOIL_LIMIT) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -272,8 +273,8 @@ export class Simulation {
     removeToxicCells() {
         for (const cell of this.cells.values()) {
             const resources = resourceMask(
-                this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy',
-                this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic'
+                this.energy[cell.index] >= SOIL_LIMIT && cell.type !== 'energy',
+                this.organic[cell.index] >= SOIL_LIMIT && cell.type !== 'organic'
             );
             if (resources) this.drop(cell, 'excess', resources);
         }

@@ -110,7 +110,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <li><i class="soil-energy"></i>Энергия</li>
                     <li><i class="soil-organic"></i>Органика</li>
                     <li><i class="soil-radiation"></i>Радиация повышает шанс мутации</li>
-                    <li>Выше 5000 оттенок бледнеет</li>
+                    <li>От 2500 оттенок бледнеет</li>
                 </ul>
             </section>
         </aside>
@@ -122,7 +122,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 const WIDTH = 100;
 const HEIGHT = 64;
 const STEP = 0.1;
-const SOIL_LIMIT = 5000;
+const SOIL_LIMIT = 2500;
 const CHANNEL_FLOW_LIMIT = 2500;
 const ENERGY_RESOURCE = 1;
 const ORGANIC_RESOURCE = 2;
@@ -131,6 +131,7 @@ const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
+const RADIATION_MUTATION_LIMIT = 5000;
 const DEATH_RADIATION = 300;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
@@ -215,7 +216,7 @@ class Simulation {
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random);
             }
         }
-        const exposure = Math.min(this.radiation[index] / SOIL_LIMIT, 1);
+        const exposure = Math.min(this.radiation[index] / RADIATION_MUTATION_LIMIT, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
             const locus = Math.floor(this.random() * (genome.length + SEED_REQUIREMENT_TRAITS.length));
@@ -344,7 +345,7 @@ class Simulation {
             const ny = y + dy;
             if (nx < 0 || nx >= WIDTH || ny < 0 || ny >= HEIGHT) continue;
             const index = ny * WIDTH + nx;
-            if (this.energy[index] > SOIL_LIMIT || this.organic[index] > SOIL_LIMIT) continue;
+            if (this.energy[index] >= SOIL_LIMIT || this.organic[index] >= SOIL_LIMIT) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -393,8 +394,8 @@ class Simulation {
     removeToxicCells() {
         for (const cell of this.cells.values()) {
             const resources = resourceMask(
-                this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy',
-                this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic'
+                this.energy[cell.index] >= SOIL_LIMIT && cell.type !== 'energy',
+                this.organic[cell.index] >= SOIL_LIMIT && cell.type !== 'organic'
             );
             if (resources) this.drop(cell, 'excess', resources);
         }
@@ -647,7 +648,7 @@ function draw() {
         const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
         const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) > SOIL_LIMIT ? 0.46 : 0;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) >= SOIL_LIMIT ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
@@ -763,8 +764,8 @@ document.querySelector('#plant').addEventListener('click', () => {
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < WIDTH * HEIGHT; index++) {
-        if (simulation.cells.has(index) || simulation.energy[index] > SOIL_LIMIT
-                || simulation.organic[index] > SOIL_LIMIT) continue;
+        if (simulation.cells.has(index) || simulation.energy[index] >= SOIL_LIMIT
+                || simulation.organic[index] >= SOIL_LIMIT) continue;
         const distance = Math.abs(index % WIDTH - center % WIDTH)
             + Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
         if (distance < bestDistance) {

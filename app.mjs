@@ -139,7 +139,7 @@ function draw() {
         const green = Math.min(radiation[index] / SOIL_LIMIT, 1);
         const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) > SOIL_LIMIT ? 0.46 : 0;
+        const pale = Math.max(energy[index], organic[index], radiation[index]) >= SOIL_LIMIT ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
@@ -255,8 +255,8 @@ document.querySelector('#plant').addEventListener('click', () => {
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < WIDTH * HEIGHT; index++) {
-        if (simulation.cells.has(index) || simulation.energy[index] > SOIL_LIMIT
-                || simulation.organic[index] > SOIL_LIMIT) continue;
+        if (simulation.cells.has(index) || simulation.energy[index] >= SOIL_LIMIT
+                || simulation.organic[index] >= SOIL_LIMIT) continue;
         const distance = Math.abs(index % WIDTH - center % WIDTH)
             + Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
         if (distance < bestDistance) {
