@@ -132,7 +132,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
             <details class="settings">
                 <summary>Настройки лимитов</summary>
                 <form id="limits">
-                    <label>Токсичность и побледнение воды <input name="soil" type="number" min="1" required></label>
+                    <label>Порог избытка энергии или органики <input name="soil" type="number" min="1" required></label>
                     <label>Поток канала в секунду <input name="flow" type="number" min="1" required></label>
                     <label>Радиация для максимума мутации <input name="radiation" type="number" min="1" required></label>
                     <label>Запас для замедления выработки <input name="slowdown" type="number" min="0" required></label>
@@ -158,7 +158,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <li><i class="soil-energy"></i>Энергия</li>
                     <li><i class="soil-organic"></i>Органика</li>
                     <li><i class="soil-radiation"></i>Радиация повышает шанс мутации</li>
-                    <li><span>От <span id="soil-limit-label">2500</span> оттенок бледнеет</span></li>
+                    <li><span>Вода бледнеет от <span id="soil-limit-label">2500</span> энергии или органики, либо от 1000 радиации</span></li>
                 </ul>
             </section>
         </aside>
@@ -182,6 +182,7 @@ const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
+const MUTATION_RADIATION_DIVISOR = 1.25;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
@@ -299,7 +300,7 @@ class Simulation {
             this.mutations++;
             for (let ny = y - 1; ny <= y + 1; ny++) {
                 for (let nx = x - 1; nx <= x + 1; nx++) {
-                    this.radiation[this.wrappedIndex(nx, ny)] /= 2;
+                    this.radiation[this.wrappedIndex(nx, ny)] /= MUTATION_RADIATION_DIVISOR;
                 }
             }
         }
@@ -655,6 +656,7 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
+const RADIATION_PALE_LIMIT = 1000;
 const FAST_OVERVIEW_MAX_ZOOM = 5;
 const DENSE_MAP_CELLS = 1500;
 const overviewColors = {
@@ -848,7 +850,9 @@ function draw() {
         const green = Math.min(radiation[index] / soilLimit, 1);
         const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
+        const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
+            || radiation[index] >= RADIATION_PALE_LIMIT;
+        const pale = concentrated ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;

@@ -13,6 +13,7 @@ const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
+const MUTATION_RADIATION_DIVISOR = 1.25;
 const CONVERSION_RATE = 150;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
@@ -130,7 +131,7 @@ export class Simulation {
             this.mutations++;
             for (let ny = y - 1; ny <= y + 1; ny++) {
                 for (let nx = x - 1; nx <= x + 1; nx++) {
-                    this.radiation[this.wrappedIndex(nx, ny)] /= 2;
+                    this.radiation[this.wrappedIndex(nx, ny)] /= MUTATION_RADIATION_DIVISOR;
                 }
             }
         }

@@ -41,6 +41,7 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
+const RADIATION_PALE_LIMIT = 1000;
 const FAST_OVERVIEW_MAX_ZOOM = 5;
 const DENSE_MAP_CELLS = 1500;
 const overviewColors = {
@@ -234,7 +235,9 @@ function draw() {
         const green = Math.min(radiation[index] / soilLimit, 1);
         const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
-        const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
+        const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
+            || radiation[index] >= RADIATION_PALE_LIMIT;
+        const pale = concentrated ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
