@@ -80,7 +80,7 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = Math.max(scale / viewScale(), 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
+        context.lineWidth = Math.max(scale / camera.zoom, 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
         context.lineCap = 'round';
         context.beginPath();
         simulation.neighbors(cell.index).forEach((index, direction) => {
@@ -100,7 +100,7 @@ function drawCell(cell) {
         });
         context.stroke();
         context.beginPath();
-        context.arc(x, y, Math.max(scale * 1.1 / viewScale(), context.lineWidth / 2), 0, Math.PI * 2);
+        context.arc(x, y, Math.max(scale * 1.1 / camera.zoom, context.lineWidth / 2), 0, Math.PI * 2);
         context.fill();
     } else if (cell.type === 'seed') {
         context.beginPath();
@@ -184,10 +184,6 @@ function drawDeathEffects(now, target = context) {
     target.restore();
 }
 
-function viewScale() {
-    return camera.zoom * Math.min(field.width / simulation.width, field.height / simulation.height);
-}
-
 function drawOverview() {
     const pixels = terrainPixels.data;
     const palette = new Map();
@@ -218,7 +214,7 @@ function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
-    const pixelsPerCell = viewScale();
+    const pixelsPerCell = camera.zoom;
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
@@ -324,7 +320,7 @@ function moveCamera(dx, dy) {
 
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
-    const pixelsPerCell = viewScale();
+    const pixelsPerCell = camera.zoom;
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
     if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
@@ -359,7 +355,7 @@ if ('PointerEvent' in window) {
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
-        const pixelsPerCell = viewScale();
+        const pixelsPerCell = camera.zoom;
         moveCamera(-dx / pixelsPerCell, -dy / pixelsPerCell);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
@@ -415,25 +411,19 @@ function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
     const height = Math.max(1, viewport.clientHeight);
     if (field.width === width && field.height === height) return;
-    const previousScale = viewScale();
-    const centerX = field.width / (2 * previousScale);
-    const centerY = field.height / (2 * previousScale);
+    moveCamera((field.width - width) / (2 * camera.zoom), (field.height - height) / (2 * camera.zoom));
     field.width = width;
     field.height = height;
-    const nextScale = viewScale();
-    moveCamera(centerX - width / (2 * nextScale), centerY - height / (2 * nextScale));
     screen.imageSmoothingEnabled = false;
 }
 
 function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
-    const previousScale = viewScale();
     const previousZoom = camera.zoom;
     camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
-    const nextScale = viewScale();
     zoom.value = String(camera.zoom);
     zoomOut.disabled = zoom.selectedIndex === 0;
     zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
-    const difference = 1 / previousScale - 1 / nextScale;
+    const difference = 1 / previousZoom - 1 / camera.zoom;
     moveCamera(anchorX * difference, anchorY * difference);
 }
 
@@ -568,7 +558,7 @@ function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
     for (const key of cameraKeys) {
         const [dx, dy] = cameraBindings[key];
-        const distance = delta * 420 / viewScale();
+        const distance = delta * 420 / camera.zoom;
         moveCamera(dx * distance, dy * distance);
     }
     if (!paused) {
