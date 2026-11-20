@@ -76,6 +76,11 @@ export class Simulation {
         this.height = Math.round(width * HEIGHT / WIDTH);
         this.cells = new Map();
         this.colonies = new Map();
+        this.tickCells = null;
+        this.tickDaylight = null;
+        this.transfers = [];
+        this.overloaded = new Map();
+        this.shadedColumns = new Uint8Array(width);
         this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
         this.neighborCache = new Array(this.energy.length);
@@ -140,6 +145,7 @@ export class Simulation {
         const seed = this.makeCell(index, 'seed', colony, parent ? cost.energy : 1350);
         if (parent) seed.organic = cost.organic;
         this.cells.set(index, seed);
+        this.tickCells = null;
         return true;
     }
 
@@ -274,6 +280,7 @@ export class Simulation {
             const child = this.makeCell(index, type, cell.colony, cost);
             if (type === 'channel') child.gene = cell.gene + 1;
             this.cells.set(index, child);
+            this.tickCells = null;
             cell.energy -= cost;
             cell.organic -= cost;
         }
@@ -285,6 +292,7 @@ export class Simulation {
         this.energy[cell.index] += cell.energy;
         this.organic[cell.index] += cell.organic;
         this.cells.delete(cell.index);
+        this.tickCells = null;
         this.onDeath?.(cell.index, cause, resources);
     }
 
@@ -295,6 +303,23 @@ export class Simulation {
                 this.organic[cell.index] >= this.limits.soil && cell.type !== 'organic'
             );
             if (resources) this.drop(cell, 'excess', resources);
+        }
+    }
+
+    prepareTick(daylight) {
+        if (this.tickCells?.length === this.cells.size && this.tickDaylight === daylight) return;
+        const existing = [...this.cells.values()];
+        if (daylight) existing.sort((a, b) => a.index - b.index);
+        this.tickCells = existing;
+        this.tickDaylight = daylight;
+        this.transfers.length = 0;
+        for (const cell of existing) {
+            for (const index of this.neighbors(cell.index)) {
+                if (index <= cell.index) continue;
+                const neighbor = this.cells.get(index);
+                if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
+                this.transfers.push({ cell, neighbor, energy: 0, organic: 0 });
+            }
         }
     }
 
@@ -311,19 +336,24 @@ export class Simulation {
         this.removeToxicCells();
         if (this.cells.size === 0) {
             this.colonies.clear();
+            this.transfers.length = 0;
             return;
         }
-        const existing = [...this.cells.values()];
-        const shadedColumns = new Set();
-        if (this.daylight) {
+        const daylight = this.daylight;
+        const needsColonyCleanup = this.tickCells === null;
+        this.prepareTick(daylight);
+        const existing = this.tickCells;
+        const shadedColumns = this.shadedColumns;
+        if (daylight) {
+            shadedColumns.fill(0);
             // Sunlight comes from above the field.
-            for (const cell of existing.sort((a, b) => a.index - b.index)) {
+            for (const cell of existing) {
                 const x = cell.index % this.width;
                 if (cell.type === 'chlorophyll') {
-                    const lightRate = shadedColumns.has(x) ? 50 : 150;
+                    const lightRate = shadedColumns[x] ? 50 : 150;
                     cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
                 }
-                shadedColumns.add(x);
+                shadedColumns[x] = 1;
             }
         }
 
@@ -341,26 +371,27 @@ export class Simulation {
 
         // Compute transfers from the same snapshot so no cell spends incoming
         // resources until the following tick.
-        const transfers = [];
-        for (const cell of existing) {
-            for (const index of this.neighbors(cell.index)) {
-                if (index <= cell.index) continue;
-                const neighbor = this.cells.get(index);
-                if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
-                if (cell.type !== 'channel' && neighbor.type !== 'channel') continue;
-                const energy = (cell.energy - neighbor.energy) * 0.025;
-                const organic = (cell.organic - neighbor.organic) * 0.025;
-                const flow = (Math.abs(energy) + Math.abs(organic)) / STEP;
-                transfers.push({ cell, neighbor, energy, organic });
-                cell.flow += flow;
-                neighbor.flow += flow;
-                const resources = resourceMask(energy, organic);
-                cell.flowResources |= resources;
-                neighbor.flowResources |= resources;
+        const transfers = this.transfers;
+        for (const transfer of transfers) {
+            const { cell, neighbor } = transfer;
+            if (cell.type !== 'channel' && neighbor.type !== 'channel') {
+                transfer.energy = transfer.organic = 0;
+                continue;
             }
+            const energy = (cell.energy - neighbor.energy) * 0.025;
+            const organic = (cell.organic - neighbor.organic) * 0.025;
+            const flow = (Math.abs(energy) + Math.abs(organic)) / STEP;
+            transfer.energy = energy;
+            transfer.organic = organic;
+            cell.flow += flow;
+            neighbor.flow += flow;
+            const resources = resourceMask(energy, organic);
+            cell.flowResources |= resources;
+            neighbor.flowResources |= resources;
         }
 
-        const overloaded = new Map();
+        const overloaded = this.overloaded;
+        overloaded.clear();
         for (const cell of existing) {
             if (cell.type === 'channel' && cell.flow > this.limits.flow) {
                 overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
@@ -368,7 +399,8 @@ export class Simulation {
         }
         this.overloads += overloaded.size;
         for (const { cell, neighbor, energy, organic } of transfers) {
-            if (overloaded.has(cell.colony) || overloaded.has(neighbor.colony)) continue;
+            if (energy === 0 && organic === 0) continue;
+            if (overloaded.size && (overloaded.has(cell.colony) || overloaded.has(neighbor.colony))) continue;
             cell.energy -= energy;
             cell.organic -= organic;
             neighbor.energy += energy;
@@ -376,7 +408,7 @@ export class Simulation {
         }
 
         for (const cell of existing) {
-            const excess = overloaded.get(cell.colony);
+            const excess = overloaded.size && overloaded.get(cell.colony);
             if (excess) {
                 this.drop(cell, 'excess', excess);
                 continue;
@@ -403,9 +435,12 @@ export class Simulation {
             }
         }
         this.removeToxicCells();
-        const living = new Set([...this.cells.values()].map(cell => cell.colony.id));
-        for (const id of this.colonies.keys()) {
-            if (!living.has(id)) this.colonies.delete(id);
+        if (needsColonyCleanup || this.tickCells === null) {
+            const living = new Set();
+            for (const cell of this.cells.values()) living.add(cell.colony.id);
+            for (const id of this.colonies.keys()) {
+                if (!living.has(id)) this.colonies.delete(id);
+            }
         }
     }
 }

@@ -41,6 +41,8 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
+const FAST_OVERVIEW_MAX_ZOOM = 5;
+const DENSE_MAP_CELLS = 1500;
 const overviewColors = {
     chlorophyll: [101, 229, 146],
     organic: [246, 107, 119],
@@ -224,11 +226,13 @@ function draw() {
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
+    const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
+        || (Number(speed.value) > 250 && simulation.cells.size >= DENSE_MAP_CELLS && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM);
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = pixelsPerCell > OVERVIEW_MAX_ZOOM && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -236,7 +240,7 @@ function draw() {
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 3] = 255;
     }
-    const tile = pixelsPerCell <= OVERVIEW_MAX_ZOOM ? drawOverview() : drawDetailedWorld();
+    const tile = useOverview ? drawOverview() : drawDetailedWorld();
     const left = -Math.round(camera.x * pixelsPerCell);
     const top = -Math.round(camera.y * pixelsPerCell);
     const pattern = screen.createPattern(tile, 'repeat');
