@@ -13,6 +13,8 @@ const speed = document.querySelector('#speed');
 const actualSpeed = document.querySelector('#actual-speed');
 const zoom = document.querySelector('#zoom');
 const zoomLevels = Array.from(zoom.options, option => Number(option.value));
+const gestureZoomOption = document.createElement('option');
+const touchPointers = new Map();
 const fieldSizeForm = document.querySelector('#field-size');
 const fieldWidth = document.querySelector('#field-width');
 const seedPack = document.querySelector('#seed-pack');
@@ -78,6 +80,8 @@ let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
 let press = null;
+let pinch = null;
+let touchGesture = false;
 let lastTap = null;
 let planted = -1;
 let plantedUntil = 0;
@@ -387,8 +391,45 @@ function plant(index) {
     updateReadout();
 }
 
+function touchPair() {
+    const points = touchPointers.values();
+    const first = points.next().value;
+    const second = points.next().value;
+    return {
+        x: (first.x + second.x) / 2,
+        y: (first.y + second.y) / 2,
+        distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y))
+    };
+}
+
+function startPinch() {
+    pinch = { ...touchPair(), zoom: camera.zoom };
+    touchGesture = true;
+    press = null;
+}
+
+function releaseTouch(event) {
+    if (!touchPointers.delete(event.pointerId)) return false;
+    const wasGesture = touchGesture;
+    if (wasGesture) {
+        lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
+        if (touchPointers.size >= 2) startPinch();
+        else pinch = null;
+        if (touchPointers.size === 0) touchGesture = false;
+    }
+    return wasGesture;
+}
+
 if ('PointerEvent' in window) {
     field.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'touch') {
+            touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+            if (touchPointers.size >= 2) {
+                field.setPointerCapture(event.pointerId);
+                startPinch();
+                return;
+            }
+        }
         const canPlant = event.button === 0;
         const rightDrag = event.button === 2 && event.pointerType === 'mouse';
         if (!event.isPrimary || (!canPlant && !rightDrag)) return;
@@ -396,26 +437,43 @@ if ('PointerEvent' in window) {
         field.setPointerCapture(event.pointerId);
     });
     field.addEventListener('pointermove', event => {
+        if (touchPointers.has(event.pointerId)) {
+            touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+            if (pinch) {
+                const pair = touchPair();
+                const rect = field.getBoundingClientRect();
+                setZoom(pinch.zoom * pair.distance / pinch.distance, pinch.x - rect.left, pinch.y - rect.top);
+                moveCamera((pinch.x - pair.x) / camera.zoom, (pinch.y - pair.y) / camera.zoom);
+                pinch.x = pair.x;
+                pinch.y = pair.y;
+                return;
+            }
+        }
         if (event.pointerId !== press?.id) return;
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
-        const pixelsPerCell = camera.zoom;
-        moveCamera(-dx / pixelsPerCell, -dy / pixelsPerCell);
+        moveCamera(-dx / camera.zoom, -dy / camera.zoom);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
-        if (event.pointerId !== press?.id) return;
+        if (releaseTouch(event) || event.pointerId !== press?.id) return;
         const stationary = press.canPlant && !press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10;
         press = null;
         lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
         if (stationary) plant(indexAt(event));
     });
-    field.addEventListener('lostpointercapture', () => { press = null; });
+    const cancelPointer = event => {
+        releaseTouch(event);
+        if (event.pointerId === press?.id) press = null;
+    };
+    field.addEventListener('pointercancel', cancelPointer);
+    field.addEventListener('lostpointercapture', cancelPointer);
 }
 
 field.addEventListener('contextmenu', event => event.preventDefault());
 field.addEventListener('click', event => {
+    if (touchGesture) return;
     if (lastTap && performance.now() - lastTap.time < 500
             && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 12) return;
     plant(indexAt(event));
@@ -468,18 +526,29 @@ function sizeView() {
 
 function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
     const previousZoom = camera.zoom;
-    camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
+    const minimum = zoomLevels[0];
+    const maximum = zoomLevels[zoomLevels.length - 1];
+    camera.zoom = Math.max(minimum, Math.min(maximum, Math.round(value * 100) / 100));
+    if (zoomLevels.includes(camera.zoom)) {
+        gestureZoomOption.remove();
+    } else {
+        gestureZoomOption.value = String(camera.zoom);
+        gestureZoomOption.textContent = `${camera.zoom.toLocaleString('ru')}×`;
+        if (!gestureZoomOption.parentNode) zoom.append(gestureZoomOption);
+    }
     zoom.value = String(camera.zoom);
-    zoomOut.disabled = zoom.selectedIndex === 0;
-    zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
+    zoomOut.disabled = camera.zoom === minimum;
+    zoomIn.disabled = camera.zoom === maximum;
     const difference = 1 / previousZoom - 1 / camera.zoom;
     moveCamera(anchorX * difference, anchorY * difference);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
 function stepZoom(direction, x, y) {
-    const next = zoom.selectedIndex + direction;
-    if (next >= 0 && next < zoomLevels.length) setZoom(zoomLevels[next], x, y);
+    const next = direction > 0
+        ? zoomLevels.find(level => level > camera.zoom)
+        : zoomLevels.findLast(level => level < camera.zoom);
+    if (next !== undefined) setZoom(next, x, y);
 }
 
 zoomOut.addEventListener('click', () => stepZoom(-1));
@@ -665,7 +734,7 @@ function frame(now) {
     if (multiplier >= COMPUTE_PRIORITY_SPEED) {
         drawInterval = simulation.cells.size >= DENSE_MAP_CELLS ? DENSE_DRAW_INTERVAL : COMPUTE_PRIORITY_DRAW_INTERVAL;
     }
-    if (multiplier <= 100 || cameraKeys.size || press || now - lastDraw >= drawInterval) {
+    if (multiplier <= 100 || cameraKeys.size || press || pinch || now - lastDraw >= drawInterval) {
         draw();
         updateReadout();
         lastDraw = now;
