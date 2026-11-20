@@ -317,6 +317,7 @@ function updateReadout() {
     const cell = simulation.cells.get(hovered);
     const soil = `Вода ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     const needs = cell?.colony.seedNeeds;
+    const thirst = cell?.colony.thirsty ? ' · Жажда органики' : '';
     let channelDetails = '';
     if (cell?.type === 'channel') {
         const { genome } = cell.colony;
@@ -326,7 +327,7 @@ function updateReadout() {
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
-        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${channelDetails} · ${soil}`
+        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${thirst}${channelDetails} · ${soil}`
         : soil;
 }
 

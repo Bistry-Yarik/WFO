@@ -18,6 +18,9 @@ const DEATH_RADIATION = 300;
 const MUTATION_RADIATION_DIVISOR = 1.5;
 const CONVERSION_RATE = 150;
 const RADIATION_CLEANUP_RATE = 50;
+const RADIATION_CLEANUP_MAX_RATE = 100;
+const STRONG_RADIATION = 750;
+const ORGANIC_THIRST_THRESHOLD = 100;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
 const BOOST_START = 900;
@@ -26,8 +29,10 @@ const BOOST_FULL = 1400;
 function productionFactor(stock, { slowdown, stop }) {
     return Math.max(0, Math.min(1, (stop - stock) / (stop - slowdown)));
 }
-function boostFactor(energy) {
-    return Math.max(0, Math.min(1, (energy - BOOST_START) / (BOOST_FULL - BOOST_START)));
+function organicBoost(cell, base) {
+    const { energy, colony } = cell;
+    const factor = colony.thirsty ? 1 : Math.max(0, Math.min(1, (energy - BOOST_START) / (BOOST_FULL - BOOST_START)));
+    return Math.min(base * factor, Math.max(0, energy - 2 * ENERGY_UPKEEP * STEP));
 }
 
 const DAY_LENGTH = 450;
@@ -143,7 +148,10 @@ export class Simulation {
             hue: parent?.hue ?? (id * 137.508 + 25) % 360,
             family: parent?.family ?? id,
             genome,
-            seedNeeds
+            seedNeeds,
+            thirsty: false,
+            organicReserve: 0,
+            reserveCells: 0
         };
         this.colonies.set(id, colony);
         const seed = this.makeCell(index, 'seed', colony, parent ? cost.energy : 1350);
@@ -178,7 +186,7 @@ export class Simulation {
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
         const base = 50 * STEP * productionFactor(cell[resource], this.limits);
-        const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
+        const bonus = resource === 'organic' ? organicBoost(cell, base) : 0;
         let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
@@ -197,8 +205,16 @@ export class Simulation {
     cleanRadiation(cell) {
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
-        // Keep enough energy for upkeep when cleaning uses the last available reserve.
-        const budget = Math.min(RADIATION_CLEANUP_RATE * STEP, Math.max(0, cell.energy - ENERGY_UPKEEP * STEP * 2));
+        const available = cell.energy - 2 * ENERGY_UPKEEP * STEP;
+        if (available <= 0) return;
+        let strongest = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                strongest = Math.max(strongest, this.radiation[this.wrappedIndex(x + dx, y + dy)]);
+            }
+        }
+        const rate = strongest >= STRONG_RADIATION ? RADIATION_CLEANUP_MAX_RATE : RADIATION_CLEANUP_RATE;
+        const budget = Math.min(rate * STEP, available);
         let remaining = budget;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
@@ -236,7 +252,7 @@ export class Simulation {
 
     bite(cell) {
         const base = BITE_RATE * STEP * productionFactor(cell.organic, this.limits);
-        const capacity = base * (1 + boostFactor(cell.energy));
+        const capacity = base + organicBoost(cell, base);
         if (capacity === 0) return;
         for (const index of this.neighbors(cell.index)) {
             const target = this.cells.get(index);
@@ -275,6 +291,7 @@ export class Simulation {
     }
 
     grow(cell) {
+        if (cell.colony.thirsty) return;
         const { type, direction } = cell.colony.genome[cell.gene % cell.colony.genome.length];
         if (this.throwSeed(cell)) {
             if (type === 'seed') cell.gene++;
@@ -369,6 +386,17 @@ export class Simulation {
         const needsColonyCleanup = this.tickCells === null;
         this.prepareTick(daylight);
         const existing = this.tickCells;
+        for (const colony of this.colonies.values()) {
+            colony.organicReserve = 0;
+            colony.reserveCells = 0;
+        }
+        for (const cell of existing) {
+            cell.colony.organicReserve += cell.organic;
+            cell.colony.reserveCells++;
+        }
+        for (const colony of this.colonies.values()) {
+            colony.thirsty = colony.organicReserve < ORGANIC_THIRST_THRESHOLD * colony.reserveCells;
+        }
         const shadedColumns = this.shadedColumns;
         if (daylight) {
             shadedColumns.fill(0);
@@ -444,7 +472,7 @@ export class Simulation {
                 const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic, this.limits);
                 const base = Math.min(capacity, difference / 2);
                 // Each bonus unit closes the gap by three: two energy spent, one organic gained.
-                const bonus = Math.min(capacity * boostFactor(cell.energy), Math.max(0, difference - 2 * base) / 3);
+                const bonus = Math.min(organicBoost(cell, capacity), Math.max(0, difference - 2 * base) / 3);
                 cell.energy -= base + 2 * bonus;
                 cell.organic += base + bonus;
             }
