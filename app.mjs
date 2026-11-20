@@ -1,4 +1,4 @@
-import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
+import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT, CHANNEL_FLOW_LIMIT, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const context = field.getContext('2d');
@@ -48,7 +48,7 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = 1.4 + Math.min(cell.flow / 1000, 1) * 6.6;
+        context.lineWidth = 1.4 + Math.min(cell.flow / CHANNEL_FLOW_LIMIT, 1) * 6.6;
         context.lineCap = 'round';
         context.beginPath();
         for (const index of simulation.neighbors(cell.index)) {

@@ -123,6 +123,7 @@ const WIDTH = 100;
 const HEIGHT = 64;
 const STEP = 0.1;
 const SOIL_LIMIT = 5000;
+const CHANNEL_FLOW_LIMIT = 2500;
 const ENERGY_RESOURCE = 1;
 const ORGANIC_RESOURCE = 2;
 const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
@@ -422,7 +423,7 @@ class Simulation {
 
         const overloaded = new Map();
         for (const cell of existing) {
-            if (cell.type === 'channel' && cell.flow > 1000) {
+            if (cell.type === 'channel' && cell.flow > CHANNEL_FLOW_LIMIT) {
                 overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
             }
         }
@@ -517,7 +518,7 @@ function drawCell(cell) {
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
-        context.lineWidth = 1.4 + Math.min(cell.flow / 1000, 1) * 6.6;
+        context.lineWidth = 1.4 + Math.min(cell.flow / CHANNEL_FLOW_LIMIT, 1) * 6.6;
         context.lineCap = 'round';
         context.beginPath();
         for (const index of simulation.neighbors(cell.index)) {

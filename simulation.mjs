@@ -2,6 +2,7 @@ export const WIDTH = 100;
 export const HEIGHT = 64;
 export const STEP = 0.1;
 export const SOIL_LIMIT = 5000;
+export const CHANNEL_FLOW_LIMIT = 2500;
 export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
@@ -301,7 +302,7 @@ export class Simulation {
 
         const overloaded = new Map();
         for (const cell of existing) {
-            if (cell.type === 'channel' && cell.flow > 1000) {
+            if (cell.type === 'channel' && cell.flow > CHANNEL_FLOW_LIMIT) {
                 overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
             }
         }
