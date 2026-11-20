@@ -18,6 +18,8 @@ const fieldWidth = document.querySelector('#field-width');
 const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const viewport = document.querySelector('.viewport');
+const effectsEnabled = document.querySelector('#show-effects');
+const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
@@ -61,12 +63,13 @@ const overviewColors = {
     energy: [105, 179, 255],
     converter: [197, 138, 255],
     teeth: [165, 43, 58],
-    cleaner: [255, 198, 91]
+    cleaner: [255, 198, 91],
+    stomach: [255, 152, 51]
 };
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     adaptive: 'Сборщик по ресурсам', seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
-    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации'
+    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации', stomach: 'Желудок'
 };
 
 const deathEffects = new Map();
@@ -100,7 +103,7 @@ function drawCell(cell) {
     const { width } = simulation;
     const x = (cell.index % width + 0.5) * scale;
     const y = (Math.floor(cell.index / width) + 0.5) * scale;
-    const color = `hsl(${cell.colony.hue} 80% 70%)`;
+    const color = familyColors.checked ? `hsl(${cell.colony.hue} 80% 70%)` : '#fff';
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
@@ -138,14 +141,15 @@ function drawCell(cell) {
         context.lineTo(x, y + 4.3);
         context.lineTo(x - 4.3, y);
         context.fill();
-    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner') {
-        const sides = { teeth: 3, converter: 5, cleaner: 6 }[cell.type];
+    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner' || cell.type === 'stomach') {
+        const sides = { teeth: 3, converter: 5, cleaner: 6, stomach: 10 }[cell.type];
         context.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
         context.beginPath();
         for (let point = 0; point < sides; point++) {
             const angle = -Math.PI / 2 + point * 2 * Math.PI / sides;
-            const px = x + Math.cos(angle) * 4.3;
-            const py = y + Math.sin(angle) * 4.3;
+            const radius = cell.type === 'stomach' && point % 2 ? 2.05 : 4.3;
+            const px = x + Math.cos(angle) * radius;
+            const py = y + Math.sin(angle) * radius;
             if (point === 0) context.moveTo(px, py);
             else context.lineTo(px, py);
         }
@@ -158,6 +162,7 @@ function drawCell(cell) {
 }
 
 function recordDeath(index, cause, resources) {
+    if (!effectsEnabled.checked) return;
     if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
     deathEffects.set(index, { cause, resources, start: performance.now() });
 }
@@ -207,7 +212,7 @@ function drawOverview() {
     const pixels = terrainPixels.data;
     const palette = new Map();
     for (const [index, cell] of simulation.cells) {
-        let color = overviewColors[cell.type];
+        let color = overviewColors[cell.type] ?? (familyColors.checked ? null : [255, 255, 255]);
         if (!color) {
             const hue = cell.colony.hue;
             if (!palette.has(hue)) {
@@ -276,6 +281,7 @@ function drawDetailedWorld() {
 }
 
 function drawEffects(target) {
+    if (!effectsEnabled.checked) return;
     const now = performance.now();
     drawDeathEffects(now, target);
     if (planted >= 0 && now < plantedUntil) {
@@ -538,6 +544,13 @@ async function toggleFullscreen() {
     }
     updateFullscreen();
 }
+
+effectsEnabled.addEventListener('change', () => {
+    deathEffects.clear();
+    planted = -1;
+    draw();
+});
+familyColors.addEventListener('change', draw);
 
 fullscreen.addEventListener('click', toggleFullscreen);
 document.addEventListener('fullscreenchange', updateFullscreen);

@@ -8,7 +8,7 @@ export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const RADIATION_RESOURCE = 4;
 const RADIATION_LETHAL_ABOVE = 999;
-export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner'];
+export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner', 'stomach'];
 const GENOME_LENGTH = 9;
 const MUTATION_TYPES = [...TYPES, 'adaptive'];
 export const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -78,7 +78,9 @@ function randomGenome(random) {
 }
 
 const SPECIAL_PACKS = {
-    solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed']
+    solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed'],
+    devourer: ['organic', 'stomach', 'channel', 'teeth', 'chlorophyll', 'organic', 'teeth', 'stomach', 'seed'],
+    electric: ['energy', 'chlorophyll', 'channel', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
 };
 
 function packGenome(pack, random) {
@@ -576,6 +578,13 @@ export class Simulation {
                 const bonus = Math.min(organicBoost(cell, capacity), Math.max(0, difference - 2 * base) / 3);
                 cell.energy -= base + 2 * bonus;
                 cell.organic += base + bonus;
+            } else if (cell.type === 'stomach' && !cell.colony.thirsty && cell.organic > cell.energy) {
+                const amount = Math.min(
+                    CONVERSION_RATE * STEP * productionFactor(cell.energy, this.limits),
+                    (cell.organic - cell.energy) / 2
+                );
+                cell.organic -= amount;
+                cell.energy += amount;
             }
             if (cell.type === 'cleaner') this.cleanRadiation(cell);
             cell.energy = Math.max(0, cell.energy - ENERGY_UPKEEP * STEP);

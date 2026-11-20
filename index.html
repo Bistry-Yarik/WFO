@@ -51,6 +51,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .organic { background: #f66b77; }
 .energy { background: #69b3ff; }
 .teeth { background: #a52b3a; clip-path: polygon(50% 0, 100% 95%, 0 95%); }
+.stomach { background: #ff9833; clip-path: polygon(50% 0, 62% 37%, 100% 38%, 70% 60%, 80% 98%, 50% 75%, 20% 98%, 30% 60%, 0 38%, 38% 37%); }
 .cleaner { background: #ffc65b; clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%); }
 .converter { background: #c58aff; clip-path: polygon(50% 0, 98% 35%, 80% 100%, 20% 100%, 2% 35%); }
 .soil-energy { background: #2357a5; }
@@ -99,6 +100,8 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .speed-status:empty { display: none; }
 
 #seed-pack { max-width: min(240px, 68vw); }
+
+.toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -114,6 +117,8 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                         <option value="worm">Червеобразный</option>
                         <option value="cleanup">Очистители + преобразователи</option>
                         <option value="solar">Хлорофилл + преобразователи</option>
+                        <option value="devourer">Пожиратель</option>
+                        <option value="electric">Электрик</option>
                     </select></label>
                     <label>Радиус <select id="seed-radius">
                         <option value="0">Одно семечко</option>
@@ -131,6 +136,8 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                         <select id="zoom" aria-label="Масштаб"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option><option value="6">6×</option><option value="7">7×</option><option value="8">8×</option><option value="9">9×</option><option value="10">10×</option><option value="15">15×</option><option value="20">20×</option><option value="30">30×</option></select>
                         <button id="zoom-in" type="button" aria-label="Увеличить масштаб">+</button>
                     </div>
+                    <label class="toggle"><input id="show-effects" type="checkbox" checked> Эффекты</label>
+                    <label class="toggle"><input id="show-family-colors" type="checkbox" checked> Цвета рода</label>
                     <button id="fullscreen" type="button" aria-keyshortcuts="F11" aria-pressed="false">Во весь экран</button>
                     <button id="reset" type="button">Сбросить</button>
                 </div>
@@ -168,6 +175,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <li><i class="converter"></i>Преобразователь</li>
                     <li><i class="teeth"></i>Зубы</li>
                     <li><i class="cleaner"></i>Очиститель радиации</li>
+                    <li><i class="stomach"></i>Желудок</li>
                 </ul>
             </section>
             <section><h2>Ресурсы в воде</h2>
@@ -194,7 +202,7 @@ const ENERGY_RESOURCE = 1;
 const ORGANIC_RESOURCE = 2;
 const RADIATION_RESOURCE = 4;
 const RADIATION_LETHAL_ABOVE = 999;
-const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner'];
+const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner', 'stomach'];
 const GENOME_LENGTH = 9;
 const MUTATION_TYPES = [...TYPES, 'adaptive'];
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -264,7 +272,9 @@ function randomGenome(random) {
 }
 
 const SPECIAL_PACKS = {
-    solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed']
+    solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed'],
+    devourer: ['organic', 'stomach', 'channel', 'teeth', 'chlorophyll', 'organic', 'teeth', 'stomach', 'seed'],
+    electric: ['energy', 'chlorophyll', 'channel', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
 };
 
 function packGenome(pack, random) {
@@ -762,6 +772,13 @@ class Simulation {
                 const bonus = Math.min(organicBoost(cell, capacity), Math.max(0, difference - 2 * base) / 3);
                 cell.energy -= base + 2 * bonus;
                 cell.organic += base + bonus;
+            } else if (cell.type === 'stomach' && !cell.colony.thirsty && cell.organic > cell.energy) {
+                const amount = Math.min(
+                    CONVERSION_RATE * STEP * productionFactor(cell.energy, this.limits),
+                    (cell.organic - cell.energy) / 2
+                );
+                cell.organic -= amount;
+                cell.energy += amount;
             }
             if (cell.type === 'cleaner') this.cleanRadiation(cell);
             cell.energy = Math.max(0, cell.energy - ENERGY_UPKEEP * STEP);
@@ -805,6 +822,8 @@ const fieldWidth = document.querySelector('#field-width');
 const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const viewport = document.querySelector('.viewport');
+const effectsEnabled = document.querySelector('#show-effects');
+const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
@@ -848,12 +867,13 @@ const overviewColors = {
     energy: [105, 179, 255],
     converter: [197, 138, 255],
     teeth: [165, 43, 58],
-    cleaner: [255, 198, 91]
+    cleaner: [255, 198, 91],
+    stomach: [255, 152, 51]
 };
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     adaptive: 'Сборщик по ресурсам', seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
-    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации'
+    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации', stomach: 'Желудок'
 };
 
 const deathEffects = new Map();
@@ -887,7 +907,7 @@ function drawCell(cell) {
     const { width } = simulation;
     const x = (cell.index % width + 0.5) * scale;
     const y = (Math.floor(cell.index / width) + 0.5) * scale;
-    const color = `hsl(${cell.colony.hue} 80% 70%)`;
+    const color = familyColors.checked ? `hsl(${cell.colony.hue} 80% 70%)` : '#fff';
     context.fillStyle = color;
     if (cell.type === 'channel') {
         context.strokeStyle = color;
@@ -925,14 +945,15 @@ function drawCell(cell) {
         context.lineTo(x, y + 4.3);
         context.lineTo(x - 4.3, y);
         context.fill();
-    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner') {
-        const sides = { teeth: 3, converter: 5, cleaner: 6 }[cell.type];
+    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner' || cell.type === 'stomach') {
+        const sides = { teeth: 3, converter: 5, cleaner: 6, stomach: 10 }[cell.type];
         context.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
         context.beginPath();
         for (let point = 0; point < sides; point++) {
             const angle = -Math.PI / 2 + point * 2 * Math.PI / sides;
-            const px = x + Math.cos(angle) * 4.3;
-            const py = y + Math.sin(angle) * 4.3;
+            const radius = cell.type === 'stomach' && point % 2 ? 2.05 : 4.3;
+            const px = x + Math.cos(angle) * radius;
+            const py = y + Math.sin(angle) * radius;
             if (point === 0) context.moveTo(px, py);
             else context.lineTo(px, py);
         }
@@ -945,6 +966,7 @@ function drawCell(cell) {
 }
 
 function recordDeath(index, cause, resources) {
+    if (!effectsEnabled.checked) return;
     if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
     deathEffects.set(index, { cause, resources, start: performance.now() });
 }
@@ -994,7 +1016,7 @@ function drawOverview() {
     const pixels = terrainPixels.data;
     const palette = new Map();
     for (const [index, cell] of simulation.cells) {
-        let color = overviewColors[cell.type];
+        let color = overviewColors[cell.type] ?? (familyColors.checked ? null : [255, 255, 255]);
         if (!color) {
             const hue = cell.colony.hue;
             if (!palette.has(hue)) {
@@ -1063,6 +1085,7 @@ function drawDetailedWorld() {
 }
 
 function drawEffects(target) {
+    if (!effectsEnabled.checked) return;
     const now = performance.now();
     drawDeathEffects(now, target);
     if (planted >= 0 && now < plantedUntil) {
@@ -1325,6 +1348,13 @@ async function toggleFullscreen() {
     }
     updateFullscreen();
 }
+
+effectsEnabled.addEventListener('change', () => {
+    deathEffects.clear();
+    planted = -1;
+    draw();
+});
+familyColors.addEventListener('change', draw);
 
 fullscreen.addEventListener('click', toggleFullscreen);
 document.addEventListener('fullscreenchange', updateFullscreen);
