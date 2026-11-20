@@ -64,12 +64,27 @@ function configureWorldCanvas() {
     field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
 }
 
+function drawOverviewMarker(x, y) {
+    const radius = 0.75 * scale / camera.zoom;
+    const { width, height } = worldCanvas;
+    const offsetX = x - radius < 0 ? width : x + radius > width ? -width : 0;
+    const offsetY = y - radius < 0 ? height : y + radius > height ? -height : 0;
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    if (offsetX) context.fillRect(x + offsetX - radius, y - radius, radius * 2, radius * 2);
+    if (offsetY) context.fillRect(x - radius, y + offsetY - radius, radius * 2, radius * 2);
+    if (offsetX && offsetY) context.fillRect(x + offsetX - radius, y + offsetY - radius, radius * 2, radius * 2);
+}
+
 function drawCell(cell) {
     const { width } = simulation;
     const x = (cell.index % width + 0.5) * scale;
     const y = (Math.floor(cell.index / width) + 0.5) * scale;
     const color = `hsl(${cell.colony.hue} 80% 70%)`;
     context.fillStyle = color;
+    if (camera.zoom < 2) {
+        drawOverviewMarker(x, y);
+        return;
+    }
     if (cell.type === 'channel') {
         context.strokeStyle = color;
         context.lineWidth = 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6;
@@ -295,8 +310,10 @@ function plant(index) {
 
 if ('PointerEvent' in window) {
     field.addEventListener('pointerdown', event => {
-        if (!event.isPrimary || event.button !== 0) return;
-        press = { id: event.pointerId, x: event.clientX, y: event.clientY, dragging: false };
+        const canPlant = event.button === 0;
+        const rightDrag = event.button === 2 && event.pointerType === 'mouse';
+        if (!event.isPrimary || (!canPlant && !rightDrag)) return;
+        press = { id: event.pointerId, x: event.clientX, y: event.clientY, dragging: rightDrag, canPlant };
         field.setPointerCapture(event.pointerId);
     });
     field.addEventListener('pointermove', event => {
@@ -309,7 +326,7 @@ if ('PointerEvent' in window) {
     });
     field.addEventListener('pointerup', event => {
         if (event.pointerId !== press?.id) return;
-        const stationary = !press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10;
+        const stationary = press.canPlant && !press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10;
         press = null;
         lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
         if (stationary) plant(indexAt(event));
@@ -317,6 +334,7 @@ if ('PointerEvent' in window) {
     field.addEventListener('lostpointercapture', () => { press = null; });
 }
 
+field.addEventListener('contextmenu', event => event.preventDefault());
 field.addEventListener('click', event => {
     if (lastTap && performance.now() - lastTap.time < 500
             && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 12) return;
