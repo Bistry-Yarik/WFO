@@ -134,12 +134,20 @@ const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
 const SEED_ORGANIC_DIVISOR = 3;
 const CONVERSION_RATE = 150;
+const ENERGY_UPKEEP = 5;
+const ORGANIC_UPKEEP = 2;
+const BOOST_START = 900;
+const BOOST_FULL = 1400;
 const PRODUCTION_SLOWDOWN = 1000;
 const PRODUCTION_STOP = 1500;
 
 function productionFactor(stock) {
     return Math.max(0, Math.min(1, (PRODUCTION_STOP - stock) / (PRODUCTION_STOP - PRODUCTION_SLOWDOWN)));
 }
+function boostFactor(energy) {
+    return Math.max(0, Math.min(1, (energy - BOOST_START) / (BOOST_FULL - BOOST_START)));
+}
+
 const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
 const SLOW_DIFFUSION_TICKS = 5;
@@ -236,7 +244,9 @@ class Simulation {
         const ground = this[resource];
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
-        let remaining = 50 * STEP * productionFactor(cell[resource]);
+        const base = 50 * STEP * productionFactor(cell[resource]);
+        const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
+        let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
@@ -249,6 +259,7 @@ class Simulation {
                 remaining -= amount;
             }
         }
+        cell.energy -= Math.max(0, bonus - remaining);
     }
 
     diffuse(resource, duration) {
@@ -285,7 +296,8 @@ class Simulation {
     }
 
     bite(cell) {
-        const capacity = BITE_RATE * STEP * productionFactor(cell.organic);
+        const base = BITE_RATE * STEP * productionFactor(cell.organic);
+        const capacity = base * (1 + boostFactor(cell.energy));
         if (capacity === 0) return;
         for (const index of this.neighbors(cell.index)) {
             const target = this.cells.get(index);
@@ -293,6 +305,7 @@ class Simulation {
             const amount = Math.min(capacity, target.organic);
             target.organic -= amount;
             cell.organic += amount;
+            cell.energy -= Math.max(0, amount - base);
             break;
         }
     }
@@ -443,15 +456,16 @@ class Simulation {
                 continue;
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
-                const amount = Math.min(
-                    CONVERSION_RATE * STEP * productionFactor(cell.organic),
-                    (cell.energy - cell.organic) / 2
-                );
-                cell.energy -= amount;
-                cell.organic += amount;
+                const difference = cell.energy - cell.organic;
+                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic);
+                const base = Math.min(capacity, difference / 2);
+                // Each bonus unit closes the gap by three: two energy spent, one organic gained.
+                const bonus = Math.min(capacity * boostFactor(cell.energy), Math.max(0, difference - 2 * base) / 3);
+                cell.energy -= base + 2 * bonus;
+                cell.organic += base + bonus;
             }
-            cell.energy = Math.max(0, cell.energy - 5 * STEP);
-            cell.organic = Math.max(0, cell.organic - 5 * STEP);
+            cell.energy = Math.max(0, cell.energy - ENERGY_UPKEEP * STEP);
+            cell.organic = Math.max(0, cell.organic - ORGANIC_UPKEEP * STEP);
             const deficit = resourceMask(cell.energy === 0, cell.organic === 0);
             if (deficit) {
                 this.drop(cell, 'deficit', deficit);
