@@ -76,6 +76,27 @@ function randomGenome(random) {
     return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
 }
 
+const SPECIAL_PACKS = {
+    organic: ['organic', 'converter', 'channel', 'organic', 'converter', 'chlorophyll', 'organic', 'converter', 'seed'],
+    solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed']
+};
+
+function packGenome(pack, random) {
+    if (pack === 'worm') {
+        const heading = Math.floor(random() * DIRECTIONS.length);
+        return [
+            { type: 'channel', direction: heading },
+            { type: 'adaptive', direction: (heading + 1) % 4 },
+            { type: 'teeth', direction: (heading + 3) % 4 },
+            { type: 'chlorophyll', direction: (heading + 3) % 4 }
+        ];
+    }
+    const types = SPECIAL_PACKS[pack];
+    return types
+        ? types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }))
+        : randomGenome(random);
+}
+
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
@@ -113,11 +134,11 @@ export class Simulation {
         return this.time % CYCLE_LENGTH < DAY_LENGTH;
     }
 
-    seed(x, y, parent = null, cost = SEED_COST) {
+    seed(x, y, parent = null, cost = SEED_COST, pack = 'standard') {
         const index = y * this.width + x;
         if (x < 0 || x >= this.width || y < 0 || y >= this.height || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
-        const genome = parent ? parent.genome.map(command => ({ ...command })) : randomGenome(this.random);
+        const genome = parent ? parent.genome.map(command => ({ ...command })) : packGenome(pack, this.random);
         const seedNeeds = parent ? { ...parent.seedNeeds } : {};
         if (!parent) {
             for (const trait of SEED_REQUIREMENT_TRAITS) {
@@ -151,6 +172,7 @@ export class Simulation {
             id,
             hue: parent?.hue ?? (id * 137.508 + 25) % 360,
             family: parent?.family ?? id,
+            pack: parent?.pack ?? pack,
             genome,
             seedNeeds,
             thirsty: false,
@@ -164,6 +186,22 @@ export class Simulation {
         this.cells.set(index, seed);
         this.tickCells = null;
         return true;
+    }
+
+    plantSeedPack(x, y, pack, radius) {
+        if (radius === 0) return Number(this.seed(x, y, null, SEED_COST, pack));
+        let planted = 0;
+        for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                if (dx % 3 !== 0 || dy % 3 !== 0 || dx * dx + dy * dy > radius * radius) continue;
+                const index = this.wrappedIndex(x + dx, y + dy);
+                if (!this.isSeedSiteSafe(index)) continue;
+                const nx = index % this.width;
+                const ny = Math.floor(index / this.width);
+                if (this.seed(nx, ny, null, SEED_COST, pack)) planted++;
+            }
+        }
+        return planted;
     }
 
     makeCell(index, type, colony, energy, organic = energy) {
@@ -293,13 +331,24 @@ export class Simulation {
         return false;
     }
 
+    adaptiveCollector(index) {
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        let energy = 0;
+        let organic = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const site = this.wrappedIndex(x + dx, y + dy);
+                energy += this.energy[site];
+                organic += this.organic[site];
+            }
+        }
+        return energy > organic ? 'energy' : 'organic';
+    }
+
     grow(cell) {
         if (cell.colony.thirsty) return;
         const { type, direction } = cell.colony.genome[cell.gene % cell.colony.genome.length];
-        if (this.throwSeed(cell)) {
-            if (type === 'seed') cell.gene++;
-            return;
-        }
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
@@ -312,6 +361,15 @@ export class Simulation {
                 return neighbor && neighbor.colony.family !== cell.colony.family;
             });
         });
+        const pack = cell.colony.pack;
+        const presetConstruction = (pack === 'worm' && (type === 'channel' || type === 'teeth'))
+            || (pack !== 'standard' && cell.gene < 2 && type !== 'seed' && type !== 'teeth');
+        const buildFirst = presetConstruction && index !== undefined
+            && cell.energy >= requirements.energy && cell.organic >= requirements.organic;
+        if (!buildFirst && this.throwSeed(cell)) {
+            if (type === 'seed') cell.gene++;
+            return;
+        }
         if (index === undefined) {
             if (type === 'teeth') cell.gene++;
             return;
@@ -323,8 +381,9 @@ export class Simulation {
             cell.energy -= SEED_COST.energy;
             cell.organic -= SEED_COST.organic;
         } else {
-            const child = this.makeCell(index, type, cell.colony, cost.energy, cost.organic);
-            if (type === 'channel') child.gene = cell.gene + 1;
+            const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
+            const child = this.makeCell(index, childType, cell.colony, cost.energy, cost.organic);
+            if (type === 'channel' && cell.colony.pack !== 'worm') child.gene = cell.gene + 1;
             this.cells.set(index, child);
             this.tickCells = null;
             cell.energy -= cost.energy;

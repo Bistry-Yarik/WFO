@@ -15,6 +15,8 @@ const zoom = document.querySelector('#zoom');
 const zoomLevels = Array.from(zoom.options, option => Number(option.value));
 const fieldSizeForm = document.querySelector('#field-size');
 const fieldWidth = document.querySelector('#field-width');
+const seedPack = document.querySelector('#seed-pack');
+const seedRadius = document.querySelector('#seed-radius');
 const viewport = document.querySelector('.viewport');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
@@ -63,7 +65,7 @@ const overviewColors = {
 };
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
-    seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
+    adaptive: 'Сборщик по ресурсам', seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
     organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации'
 };
 
@@ -355,7 +357,7 @@ function plant(index) {
     const { width } = simulation;
     if (index < 0) return;
     hovered = index;
-    if (simulation.seed(index % width, Math.floor(index / width))) {
+    if (simulation.plantSeedPack(index % width, Math.floor(index / width), seedPack.value, Number(seedRadius.value))) {
         planted = index;
         plantedUntil = performance.now() + 700;
         fieldSizeForm.hidden = true;
@@ -398,7 +400,11 @@ field.addEventListener('click', event => {
     plant(indexAt(event));
 });
 
-document.querySelector('#plant').addEventListener('click', () => {
+const plantButton = document.querySelector('#plant');
+seedRadius.addEventListener('change', () => {
+    plantButton.textContent = seedRadius.value === '0' ? 'Посадить семечко' : 'Рассыпать семечки';
+});
+plantButton.addEventListener('click', () => {
     const { width, height } = simulation;
     const rect = field.getBoundingClientRect();
     const x = rect.left + rect.width / 2;

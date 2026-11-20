@@ -90,3 +90,5 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 
 .speed-status { color: var(--muted); font-size: 13px; }
 .speed-status:empty { display: none; }
+
+#seed-pack { max-width: min(240px, 68vw); }
