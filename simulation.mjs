@@ -14,7 +14,7 @@ const THROW_OFFSETS = [];
 for (let dy = -3; dy <= 3; dy++) {
     for (let dx = -3; dx <= 3; dx++) {
         const distance = Math.abs(dx) + Math.abs(dy);
-        if (distance >= 2 && distance <= 3) THROW_OFFSETS.push([dx, dy]);
+        if (distance >= 1 && distance <= 3) THROW_OFFSETS.push([dx, dy]);
     }
 }
 
@@ -144,8 +144,8 @@ export class Simulation {
 
     grow(cell) {
         const type = cell.colony.genome[cell.gene % cell.colony.genome.length];
-        if (type === 'seed' && this.throwSeed(cell)) {
-            cell.gene++;
+        if (this.throwSeed(cell)) {
+            if (type === 'seed') cell.gene++;
             return;
         }
         const neighbors = this.neighbors(cell.index);
@@ -154,10 +154,7 @@ export class Simulation {
         const rotation = (cell.colony.orientation + cell.gene) % 4;
         const ordered = neighbors.slice(rotation).concat(neighbors.slice(0, rotation));
         const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
-        if (index === undefined) {
-            if (type !== 'seed') this.throwSeed(cell);
-            return;
-        }
+        if (index === undefined) return;
 
         if (type === 'seed') {
             this.seed(index % WIDTH, Math.floor(index / WIDTH), cell.colony);
