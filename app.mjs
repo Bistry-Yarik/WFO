@@ -58,12 +58,13 @@ const overviewColors = {
     organic: [246, 107, 119],
     energy: [105, 179, 255],
     converter: [197, 138, 255],
-    teeth: [165, 43, 58]
+    teeth: [165, 43, 58],
+    cleaner: [255, 198, 91]
 };
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
-    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы'
+    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации'
 };
 
 const deathEffects = new Map();
@@ -135,9 +136,9 @@ function drawCell(cell) {
         context.lineTo(x, y + 4.3);
         context.lineTo(x - 4.3, y);
         context.fill();
-    } else if (cell.type === 'converter' || cell.type === 'teeth') {
-        const sides = cell.type === 'teeth' ? 3 : 5;
-        context.fillStyle = cell.type === 'teeth' ? '#a52b3a' : '#c58aff';
+    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner') {
+        const sides = { teeth: 3, converter: 5, cleaner: 6 }[cell.type];
+        context.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
         context.beginPath();
         for (let point = 0; point < sides; point++) {
             const angle = -Math.PI / 2 + point * 2 * Math.PI / sides;

@@ -44,6 +44,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .organic { background: #f66b77; }
 .energy { background: #69b3ff; }
 .teeth { background: #a52b3a; clip-path: polygon(50% 0, 100% 95%, 0 95%); }
+.cleaner { background: #ffc65b; clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%); }
 .converter { background: #c58aff; clip-path: polygon(50% 0, 98% 35%, 80% 100%, 20% 100%, 2% 35%); }
 .soil-energy { background: #2357a5; }
 .soil-organic { background: #a43444; }

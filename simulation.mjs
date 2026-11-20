@@ -8,7 +8,7 @@ export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const RADIATION_RESOURCE = 4;
 const RADIATION_LETHAL_ABOVE = 999;
-export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
+export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner'];
 const GENOME_LENGTH = 9;
 export const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
@@ -17,6 +17,7 @@ const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
 const MUTATION_RADIATION_DIVISOR = 1.5;
 const CONVERSION_RATE = 150;
+const RADIATION_CLEANUP_RATE = 50;
 const ENERGY_UPKEEP = 5;
 const ORGANIC_UPKEEP = 2;
 const BOOST_START = 900;
@@ -191,6 +192,23 @@ export class Simulation {
             }
         }
         cell.energy -= Math.max(0, bonus - remaining);
+    }
+
+    cleanRadiation(cell) {
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
+        // Keep enough energy for upkeep when cleaning uses the last available reserve.
+        const budget = Math.min(RADIATION_CLEANUP_RATE * STEP, Math.max(0, cell.energy - ENERGY_UPKEEP * STEP * 2));
+        let remaining = budget;
+        for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
+            for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
+                const index = this.wrappedIndex(x + dx, y + dy);
+                const removed = Math.min(this.radiation[index], remaining);
+                this.radiation[index] -= removed;
+                remaining -= removed;
+            }
+        }
+        cell.energy -= budget - remaining;
     }
 
     diffuse(resource, duration) {
@@ -430,6 +448,7 @@ export class Simulation {
                 cell.energy -= base + 2 * bonus;
                 cell.organic += base + bonus;
             }
+            if (cell.type === 'cleaner') this.cleanRadiation(cell);
             cell.energy = Math.max(0, cell.energy - ENERGY_UPKEEP * STEP);
             cell.organic = Math.max(0, cell.organic - ORGANIC_UPKEEP * STEP);
             const deficit = resourceMask(cell.energy === 0, cell.organic === 0);
