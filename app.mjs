@@ -1,4 +1,4 @@
-import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT } from './simulation.mjs';
+import { Simulation, WIDTH, HEIGHT, STEP, SOIL_LIMIT, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const context = field.getContext('2d');
@@ -23,12 +23,15 @@ const stats = document.querySelector('#stats');
 const inspect = document.querySelector('#inspect');
 const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
+const DEATH_EFFECT_MS = 650;
+const MAX_DEATH_EFFECTS = 160;
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
     organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы'
 };
 
-let simulation = new Simulation();
+const deathEffects = new Map();
+let simulation = new Simulation(Math.random, recordDeath);
 let paused = false;
 let hovered = -1;
 let press = null;
@@ -89,6 +92,44 @@ function drawCell(cell) {
     }
 }
 
+function recordDeath(index, cause, resources) {
+    if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
+    deathEffects.set(index, { cause, resources, start: performance.now() });
+}
+
+function drawDeathEffects(now) {
+    if (deathEffects.size === 0) return;
+    context.save();
+    context.lineWidth = 2;
+    for (const [index, effect] of deathEffects) {
+        const progress = (now - effect.start) / DEATH_EFFECT_MS;
+        if (progress >= 1) {
+            deathEffects.delete(index);
+            continue;
+        }
+
+        const x = (index % WIDTH + 0.5) * scale;
+        const y = (Math.floor(index / WIDTH) + 0.5) * scale;
+        const expansion = effect.cause === 'excess' ? progress : 1 - progress;
+        const radius = 2 + 16 * expansion;
+        const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
+        context.globalAlpha = 1 - progress;
+        if (effect.resources & ENERGY_RESOURCE) {
+            context.strokeStyle = '#69b3ff';
+            context.beginPath();
+            context.arc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI);
+            context.stroke();
+        }
+        if (effect.resources & ORGANIC_RESOURCE) {
+            context.strokeStyle = '#ff7885';
+            context.beginPath();
+            context.arc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI);
+            context.stroke();
+        }
+    }
+    context.restore();
+}
+
 function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight } = simulation;
@@ -112,7 +153,9 @@ function draw() {
     for (const cell of simulation.cells.values()) {
         if (cell.type !== 'channel') drawCell(cell);
     }
-    if (planted >= 0 && performance.now() < plantedUntil) {
+    const now = performance.now();
+    drawDeathEffects(now);
+    if (planted >= 0 && now < plantedUntil) {
         const x = (planted % WIDTH + 0.5) * scale;
         const y = (Math.floor(planted / WIDTH) + 0.5) * scale;
         context.strokeStyle = '#fff';
@@ -255,7 +298,8 @@ const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
 speed.addEventListener('change', () => { elapsed = 0; });
 document.querySelector('#reset').addEventListener('click', () => {
-    simulation = new Simulation();
+    deathEffects.clear();
+    simulation = new Simulation(Math.random, recordDeath);
     elapsed = 0;
     hovered = -1;
     planted = -1;

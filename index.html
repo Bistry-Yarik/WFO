@@ -123,6 +123,8 @@ const WIDTH = 100;
 const HEIGHT = 64;
 const STEP = 0.1;
 const SOIL_LIMIT = 5000;
+const ENERGY_RESOURCE = 1;
+const ORGANIC_RESOURCE = 2;
 const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
@@ -152,9 +154,14 @@ for (let dy = -3; dy <= 3; dy++) {
     }
 }
 
+function resourceMask(energy, organic) {
+    return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
+}
+
 class Simulation {
-    constructor(random = Math.random) {
+    constructor(random = Math.random, onDeath = null) {
         this.random = random;
+        this.onDeath = onDeath;
         this.cells = new Map();
         this.colonies = new Map();
         this.energy = new Float64Array(WIDTH * HEIGHT);
@@ -211,7 +218,7 @@ class Simulation {
     }
 
     makeCell(index, type, colony, reserve) {
-        return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0 };
+        return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
     neighbors(index) {
@@ -337,21 +344,21 @@ class Simulation {
         cell.gene++;
     }
 
-    drop(cell) {
+    drop(cell, cause, resources) {
         this.radiation[cell.index] += DEATH_RADIATION;
         this.energy[cell.index] += cell.energy;
         this.organic[cell.index] += cell.organic;
         this.cells.delete(cell.index);
-    }
-
-    isToxic(cell) {
-        return (this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy')
-            || (this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic');
+        this.onDeath?.(cell.index, cause, resources);
     }
 
     removeToxicCells() {
         for (const cell of this.cells.values()) {
-            if (this.isToxic(cell)) this.drop(cell);
+            const resources = resourceMask(
+                this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy',
+                this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic'
+            );
+            if (resources) this.drop(cell, 'excess', resources);
         }
     }
 
@@ -382,6 +389,7 @@ class Simulation {
 
         for (const cell of existing) {
             cell.flow = 0;
+            cell.flowResources = 0;
             cell.age += STEP;
             if (cell.type === 'seed' && cell.age >= 2) cell.type = 'channel';
             if (cell.type === 'organic' || cell.type === 'energy') this.collect(cell, cell.type);
@@ -406,11 +414,18 @@ class Simulation {
                 transfers.push({ cell, neighbor, energy, organic });
                 cell.flow += flow;
                 neighbor.flow += flow;
+                const resources = resourceMask(energy, organic);
+                cell.flowResources |= resources;
+                neighbor.flowResources |= resources;
             }
         }
 
-        const overloaded = new Set(existing.filter(cell => cell.type === 'channel' && cell.flow > 1000)
-            .map(cell => cell.colony));
+        const overloaded = new Map();
+        for (const cell of existing) {
+            if (cell.type === 'channel' && cell.flow > 1000) {
+                overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
+            }
+        }
         this.overloads += overloaded.size;
         for (const { cell, neighbor, energy, organic } of transfers) {
             if (overloaded.has(cell.colony) || overloaded.has(neighbor.colony)) continue;
@@ -421,8 +436,9 @@ class Simulation {
         }
 
         for (const cell of existing) {
-            if (overloaded.has(cell.colony)) {
-                this.drop(cell);
+            const excess = overloaded.get(cell.colony);
+            if (excess) {
+                this.drop(cell, 'excess', excess);
                 continue;
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
@@ -435,8 +451,9 @@ class Simulation {
             }
             cell.energy = Math.max(0, cell.energy - 5 * STEP);
             cell.organic = Math.max(0, cell.organic - 5 * STEP);
-            if (cell.energy === 0 || cell.organic === 0) {
-                this.drop(cell);
+            const deficit = resourceMask(cell.energy === 0, cell.organic === 0);
+            if (deficit) {
+                this.drop(cell, 'deficit', deficit);
                 continue;
             }
             if (cell.type === 'channel' && cell.age >= cell.growth) {
@@ -475,12 +492,15 @@ const stats = document.querySelector('#stats');
 const inspect = document.querySelector('#inspect');
 const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
+const DEATH_EFFECT_MS = 650;
+const MAX_DEATH_EFFECTS = 160;
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
     organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы'
 };
 
-let simulation = new Simulation();
+const deathEffects = new Map();
+let simulation = new Simulation(Math.random, recordDeath);
 let paused = false;
 let hovered = -1;
 let press = null;
@@ -541,6 +561,44 @@ function drawCell(cell) {
     }
 }
 
+function recordDeath(index, cause, resources) {
+    if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
+    deathEffects.set(index, { cause, resources, start: performance.now() });
+}
+
+function drawDeathEffects(now) {
+    if (deathEffects.size === 0) return;
+    context.save();
+    context.lineWidth = 2;
+    for (const [index, effect] of deathEffects) {
+        const progress = (now - effect.start) / DEATH_EFFECT_MS;
+        if (progress >= 1) {
+            deathEffects.delete(index);
+            continue;
+        }
+
+        const x = (index % WIDTH + 0.5) * scale;
+        const y = (Math.floor(index / WIDTH) + 0.5) * scale;
+        const expansion = effect.cause === 'excess' ? progress : 1 - progress;
+        const radius = 2 + 16 * expansion;
+        const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
+        context.globalAlpha = 1 - progress;
+        if (effect.resources & ENERGY_RESOURCE) {
+            context.strokeStyle = '#69b3ff';
+            context.beginPath();
+            context.arc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI);
+            context.stroke();
+        }
+        if (effect.resources & ORGANIC_RESOURCE) {
+            context.strokeStyle = '#ff7885';
+            context.beginPath();
+            context.arc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI);
+            context.stroke();
+        }
+    }
+    context.restore();
+}
+
 function draw() {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight } = simulation;
@@ -564,7 +622,9 @@ function draw() {
     for (const cell of simulation.cells.values()) {
         if (cell.type !== 'channel') drawCell(cell);
     }
-    if (planted >= 0 && performance.now() < plantedUntil) {
+    const now = performance.now();
+    drawDeathEffects(now);
+    if (planted >= 0 && now < plantedUntil) {
         const x = (planted % WIDTH + 0.5) * scale;
         const y = (Math.floor(planted / WIDTH) + 0.5) * scale;
         context.strokeStyle = '#fff';
@@ -707,7 +767,8 @@ const fit = Math.floor(viewport.clientWidth / WIDTH);
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
 speed.addEventListener('change', () => { elapsed = 0; });
 document.querySelector('#reset').addEventListener('click', () => {
-    simulation = new Simulation();
+    deathEffects.clear();
+    simulation = new Simulation(Math.random, recordDeath);
     elapsed = 0;
     hovered = -1;
     planted = -1;

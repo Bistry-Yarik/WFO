@@ -2,6 +2,8 @@ export const WIDTH = 100;
 export const HEIGHT = 64;
 export const STEP = 0.1;
 export const SOIL_LIMIT = 5000;
+export const ENERGY_RESOURCE = 1;
+export const ORGANIC_RESOURCE = 2;
 export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
@@ -31,9 +33,14 @@ for (let dy = -3; dy <= 3; dy++) {
     }
 }
 
+function resourceMask(energy, organic) {
+    return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
+}
+
 export class Simulation {
-    constructor(random = Math.random) {
+    constructor(random = Math.random, onDeath = null) {
         this.random = random;
+        this.onDeath = onDeath;
         this.cells = new Map();
         this.colonies = new Map();
         this.energy = new Float64Array(WIDTH * HEIGHT);
@@ -90,7 +97,7 @@ export class Simulation {
     }
 
     makeCell(index, type, colony, reserve) {
-        return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0 };
+        return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
     neighbors(index) {
@@ -216,21 +223,21 @@ export class Simulation {
         cell.gene++;
     }
 
-    drop(cell) {
+    drop(cell, cause, resources) {
         this.radiation[cell.index] += DEATH_RADIATION;
         this.energy[cell.index] += cell.energy;
         this.organic[cell.index] += cell.organic;
         this.cells.delete(cell.index);
-    }
-
-    isToxic(cell) {
-        return (this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy')
-            || (this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic');
+        this.onDeath?.(cell.index, cause, resources);
     }
 
     removeToxicCells() {
         for (const cell of this.cells.values()) {
-            if (this.isToxic(cell)) this.drop(cell);
+            const resources = resourceMask(
+                this.energy[cell.index] > SOIL_LIMIT && cell.type !== 'energy',
+                this.organic[cell.index] > SOIL_LIMIT && cell.type !== 'organic'
+            );
+            if (resources) this.drop(cell, 'excess', resources);
         }
     }
 
@@ -261,6 +268,7 @@ export class Simulation {
 
         for (const cell of existing) {
             cell.flow = 0;
+            cell.flowResources = 0;
             cell.age += STEP;
             if (cell.type === 'seed' && cell.age >= 2) cell.type = 'channel';
             if (cell.type === 'organic' || cell.type === 'energy') this.collect(cell, cell.type);
@@ -285,11 +293,18 @@ export class Simulation {
                 transfers.push({ cell, neighbor, energy, organic });
                 cell.flow += flow;
                 neighbor.flow += flow;
+                const resources = resourceMask(energy, organic);
+                cell.flowResources |= resources;
+                neighbor.flowResources |= resources;
             }
         }
 
-        const overloaded = new Set(existing.filter(cell => cell.type === 'channel' && cell.flow > 1000)
-            .map(cell => cell.colony));
+        const overloaded = new Map();
+        for (const cell of existing) {
+            if (cell.type === 'channel' && cell.flow > 1000) {
+                overloaded.set(cell.colony, (overloaded.get(cell.colony) ?? 0) | cell.flowResources);
+            }
+        }
         this.overloads += overloaded.size;
         for (const { cell, neighbor, energy, organic } of transfers) {
             if (overloaded.has(cell.colony) || overloaded.has(neighbor.colony)) continue;
@@ -300,8 +315,9 @@ export class Simulation {
         }
 
         for (const cell of existing) {
-            if (overloaded.has(cell.colony)) {
-                this.drop(cell);
+            const excess = overloaded.get(cell.colony);
+            if (excess) {
+                this.drop(cell, 'excess', excess);
                 continue;
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
@@ -314,8 +330,9 @@ export class Simulation {
             }
             cell.energy = Math.max(0, cell.energy - 5 * STEP);
             cell.organic = Math.max(0, cell.organic - 5 * STEP);
-            if (cell.energy === 0 || cell.organic === 0) {
-                this.drop(cell);
+            const deficit = resourceMask(cell.energy === 0, cell.organic === 0);
+            if (deficit) {
+                this.drop(cell, 'deficit', deficit);
                 continue;
             }
             if (cell.type === 'channel' && cell.age >= cell.growth) {
