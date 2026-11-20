@@ -6,6 +6,8 @@ export const DEFAULT_LIMITS = Object.freeze({
 });
 export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
+export const RADIATION_RESOURCE = 4;
+const RADIATION_LETHAL_ABOVE = 999;
 export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
 const GENOME_LENGTH = 9;
 export const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -229,6 +231,11 @@ export class Simulation {
         }
     }
 
+    isSeedSiteSafe(index) {
+        return this.energy[index] < this.limits.soil && this.organic[index] < this.limits.soil
+            && this.radiation[index] <= RADIATION_LETHAL_ABOVE;
+    }
+
     throwSeed(cell) {
         const { throwEnergy, organic } = cell.colony.seedNeeds;
         if (cell.energy < throwEnergy || cell.organic < organic) return false;
@@ -240,7 +247,7 @@ export class Simulation {
             const index = this.wrappedIndex(x + dx, y + dy);
             const nx = index % this.width;
             const ny = Math.floor(index / this.width);
-            if (this.energy[index] >= this.limits.soil || this.organic[index] >= this.limits.soil) continue;
+            if (!this.isSeedSiteSafe(index)) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
@@ -302,7 +309,7 @@ export class Simulation {
             const resources = resourceMask(
                 this.energy[cell.index] >= this.limits.soil && cell.type !== 'energy',
                 this.organic[cell.index] >= this.limits.soil && cell.type !== 'organic'
-            );
+            ) | (this.radiation[cell.index] > RADIATION_LETHAL_ABOVE ? RADIATION_RESOURCE : 0);
             if (resources) this.drop(cell, 'excess', resources);
         }
     }

@@ -1,4 +1,4 @@
-import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
+import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE, RADIATION_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const screen = field.getContext('2d');
@@ -42,6 +42,12 @@ const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
 const RADIATION_PALE_LIMIT = 1000;
+const RADIATION_TINT_WEIGHT = 2.5;
+const resourceRingColors = [
+    [ENERGY_RESOURCE, '#69b3ff'],
+    [ORGANIC_RESOURCE, '#ff7885'],
+    [RADIATION_RESOURCE, '#65e592']
+];
 const FAST_OVERVIEW_MAX_ZOOM = 5;
 const DENSE_MAP_CELLS = 1500;
 const overviewColors = {
@@ -178,18 +184,13 @@ function drawDeathEffects(now, target = context) {
         const y = (Math.floor(index / width) + 0.5) * scale;
         const expansion = effect.cause === 'excess' ? progress : 1 - progress;
         const radius = 2 + 16 * expansion;
-        const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
+        const segments = resourceRingColors.filter(([resource]) => effect.resources & resource);
+        const sweep = 2 * Math.PI / segments.length;
         target.globalAlpha = 1 - progress;
-        if (effect.resources & ENERGY_RESOURCE) {
-            target.strokeStyle = '#69b3ff';
+        for (let i = 0; i < segments.length; i++) {
+            target.strokeStyle = segments[i][1];
             target.beginPath();
-            wrappedArc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI, target);
-            target.stroke();
-        }
-        if (effect.resources & ORGANIC_RESOURCE) {
-            target.strokeStyle = '#ff7885';
-            target.beginPath();
-            wrappedArc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI, target);
+            wrappedArc(x, y, radius, i * sweep, (i + 1) * sweep, target);
             target.stroke();
         }
     }
@@ -232,7 +233,7 @@ function draw() {
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
-        const green = Math.min(radiation[index] / soilLimit, 1);
+        const green = Math.min(radiation[index] * RADIATION_TINT_WEIGHT / soilLimit, 1);
         const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
@@ -401,8 +402,7 @@ document.querySelector('#plant').addEventListener('click', () => {
     let nearest = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < simulation.energy.length; index++) {
-        if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
-                || simulation.organic[index] >= simulation.limits.soil) continue;
+        if (simulation.cells.has(index) || !simulation.isSeedSiteSafe(index)) continue;
         const dx = Math.abs(index % width - center % width);
         const dy = Math.abs(Math.floor(index / width) - Math.floor(center / width));
         const distance = Math.min(dx, width - dx) + Math.min(dy, height - dy);
