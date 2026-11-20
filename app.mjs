@@ -8,6 +8,9 @@ const scale = 10;
 const terrain = document.createElement('canvas');
 const terrainContext = terrain.getContext('2d');
 let terrainPixels;
+const overview = document.createElement('canvas');
+const overviewContext = overview.getContext('2d');
+let overviewPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
@@ -64,27 +67,12 @@ function configureWorldCanvas() {
     field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
 }
 
-function drawOverviewMarker(x, y) {
-    const radius = 0.75 * scale / camera.zoom;
-    const { width, height } = worldCanvas;
-    const offsetX = x - radius < 0 ? width : x + radius > width ? -width : 0;
-    const offsetY = y - radius < 0 ? height : y + radius > height ? -height : 0;
-    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-    if (offsetX) context.fillRect(x + offsetX - radius, y - radius, radius * 2, radius * 2);
-    if (offsetY) context.fillRect(x - radius, y + offsetY - radius, radius * 2, radius * 2);
-    if (offsetX && offsetY) context.fillRect(x + offsetX - radius, y + offsetY - radius, radius * 2, radius * 2);
-}
-
 function drawCell(cell) {
     const { width } = simulation;
     const x = (cell.index % width + 0.5) * scale;
     const y = (Math.floor(cell.index / width) + 0.5) * scale;
     const color = `hsl(${cell.colony.hue} 80% 70%)`;
     context.fillStyle = color;
-    if (camera.zoom < 2) {
-        drawOverviewMarker(x, y);
-        return;
-    }
     if (cell.type === 'channel') {
         context.strokeStyle = color;
         context.lineWidth = 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6;
@@ -145,23 +133,23 @@ function recordDeath(index, cause, resources) {
     deathEffects.set(index, { cause, resources, start: performance.now() });
 }
 
-function wrappedArc(x, y, radius, start, end) {
+function wrappedArc(x, y, radius, start, end, target = context) {
     const { width, height } = worldCanvas;
     const offsetX = x - radius < 0 ? width : x + radius > width ? -width : 0;
     const offsetY = y - radius < 0 ? height : y + radius > height ? -height : 0;
     for (const dx of offsetX ? [0, offsetX] : [0]) {
         for (const dy of offsetY ? [0, offsetY] : [0]) {
-            context.moveTo(x + dx + radius * Math.cos(start), y + dy + radius * Math.sin(start));
-            context.arc(x + dx, y + dy, radius, start, end);
+            target.moveTo(x + dx + radius * Math.cos(start), y + dy + radius * Math.sin(start));
+            target.arc(x + dx, y + dy, radius, start, end);
         }
     }
 }
 
-function drawDeathEffects(now) {
+function drawDeathEffects(now, target = context) {
     const { width } = simulation;
     if (deathEffects.size === 0) return;
-    context.save();
-    context.lineWidth = 2;
+    target.save();
+    target.lineWidth = 2;
     for (const [index, effect] of deathEffects) {
         const progress = (now - effect.start) / DEATH_EFFECT_MS;
         if (progress >= 1) {
@@ -174,21 +162,88 @@ function drawDeathEffects(now) {
         const expansion = effect.cause === 'excess' ? progress : 1 - progress;
         const radius = 2 + 16 * expansion;
         const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
-        context.globalAlpha = 1 - progress;
+        target.globalAlpha = 1 - progress;
         if (effect.resources & ENERGY_RESOURCE) {
-            context.strokeStyle = '#69b3ff';
-            context.beginPath();
-            wrappedArc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI);
-            context.stroke();
+            target.strokeStyle = '#69b3ff';
+            target.beginPath();
+            wrappedArc(x, y, radius, 0, both ? Math.PI : 2 * Math.PI, target);
+            target.stroke();
         }
         if (effect.resources & ORGANIC_RESOURCE) {
-            context.strokeStyle = '#ff7885';
-            context.beginPath();
-            wrappedArc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI);
-            context.stroke();
+            target.strokeStyle = '#ff7885';
+            target.beginPath();
+            wrappedArc(x, y, radius, both ? Math.PI : 0, 2 * Math.PI, target);
+            target.stroke();
         }
     }
-    context.restore();
+    target.restore();
+}
+
+function mapViewRect() {
+    const width = Math.min(field.width, simulation.width * camera.zoom);
+    const height = Math.min(field.height, simulation.height * camera.zoom);
+    return { width, height, left: Math.floor((field.width - width) / 2), top: Math.floor((field.height - height) / 2) };
+}
+
+function drawOverview() {
+    const { width, height, cells } = simulation;
+    const columns = Math.ceil(width * Math.min(1, camera.zoom));
+    const rows = Math.ceil(height * Math.min(1, camera.zoom));
+    if (!overviewPixels || overview.width !== columns || overview.height !== rows) {
+        overview.width = columns;
+        overview.height = rows;
+        overviewPixels = overviewContext.createImageData(columns, rows);
+    }
+
+    const source = terrainPixels.data;
+    const result = overviewPixels.data;
+    const palette = new Map();
+    for (const [index, cell] of cells) {
+        const hue = cell.colony.hue;
+        if (!palette.has(hue)) {
+            const component = (n) => {
+                const k = (n + hue / 30) % 12;
+                return 255 * (0.7 - 0.24 * Math.max(-1, Math.min(k - 3, 9 - k, 1)));
+            };
+            palette.set(hue, [component(0), component(8), component(4)]);
+        }
+        const [red, green, blue] = palette.get(hue);
+        const offset = index * 4;
+        source[offset] = red;
+        source[offset + 1] = green;
+        source[offset + 2] = blue;
+    }
+    for (let row = 0; row < rows; row++) {
+        const top = Math.floor(row * height / rows);
+        const bottom = Math.floor((row + 1) * height / rows);
+        for (let column = 0; column < columns; column++) {
+            const left = Math.floor(column * width / columns);
+            const right = Math.floor((column + 1) * width / columns);
+            let red = 0;
+            let green = 0;
+            let blue = 0;
+            for (let y = top; y < bottom; y++) {
+                for (let x = left; x < right; x++) {
+                    const offset = (y * width + x) * 4;
+                    red += source[offset];
+                    green += source[offset + 1];
+                    blue += source[offset + 2];
+                }
+            }
+            const count = (right - left) * (bottom - top);
+            const offset = (row * columns + column) * 4;
+            result[offset] = red / count;
+            result[offset + 1] = green / count;
+            result[offset + 2] = blue / count;
+            result[offset + 3] = 255;
+        }
+    }
+    overviewContext.putImageData(overviewPixels, 0, 0);
+    overviewContext.save();
+    overviewContext.scale(columns / worldCanvas.width, rows / worldCanvas.height);
+    drawEffects(overviewContext);
+    overviewContext.restore();
+    return overview;
 }
 
 function draw() {
@@ -199,7 +254,7 @@ function draw() {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = camera.zoom >= 2 && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -207,6 +262,22 @@ function draw() {
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 3] = 255;
     }
+    const tile = camera.zoom < 2 ? drawOverview() : drawDetailedWorld();
+    const view = mapViewRect();
+    screen.fillStyle = '#101d18';
+    screen.fillRect(0, 0, field.width, field.height);
+    const left = view.left - Math.round(camera.x * camera.zoom);
+    const top = view.top - Math.round(camera.y * camera.zoom);
+    const pattern = screen.createPattern(tile, 'repeat');
+    pattern.setTransform(new DOMMatrix().translate(left, top).scale(
+        simulation.width * camera.zoom / tile.width,
+        simulation.height * camera.zoom / tile.height
+    ));
+    screen.fillStyle = pattern;
+    screen.fillRect(view.left, view.top, view.width, view.height);
+}
+
+function drawDetailedWorld() {
     terrainContext.putImageData(terrainPixels, 0, 0);
     context.drawImage(terrain, 0, 0, worldCanvas.width, worldCanvas.height);
     for (const cell of simulation.cells.values()) {
@@ -215,23 +286,23 @@ function draw() {
     for (const cell of simulation.cells.values()) {
         if (cell.type !== 'channel') drawCell(cell);
     }
+    drawEffects(context);
+    return worldCanvas;
+}
+
+function drawEffects(target) {
     const now = performance.now();
-    drawDeathEffects(now);
+    drawDeathEffects(now, target);
     if (planted >= 0 && now < plantedUntil) {
+        const { width } = simulation;
         const x = (planted % width + 0.5) * scale;
         const y = (Math.floor(planted / width) + 0.5) * scale;
-        context.strokeStyle = '#fff';
-        context.lineWidth = 2;
-        context.beginPath();
-        wrappedArc(x, y, 9, 0, Math.PI * 2);
-        context.stroke();
+        target.strokeStyle = '#fff';
+        target.lineWidth = 2;
+        target.beginPath();
+        wrappedArc(x, y, 9, 0, Math.PI * 2, target);
+        target.stroke();
     }
-    const left = -Math.round(camera.x * camera.zoom);
-    const top = -Math.round(camera.y * camera.zoom);
-    const pattern = screen.createPattern(worldCanvas, 'repeat');
-    pattern.setTransform(new DOMMatrix().translate(left, top).scale(camera.zoom / scale));
-    screen.fillStyle = pattern;
-    screen.fillRect(0, 0, field.width, field.height);
 }
 
 const statRows = [
@@ -287,9 +358,10 @@ function moveCamera(dx, dy) {
 
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
-    const px = event.clientX - rect.left;
-    const py = event.clientY - rect.top;
-    if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
+    const view = mapViewRect();
+    const px = event.clientX - rect.left - view.left;
+    const py = event.clientY - rect.top - view.top;
+    if (px < 0 || py < 0 || px >= view.width || py >= view.height) return -1;
     const x = Math.floor((px + Math.round(camera.x * camera.zoom)) / camera.zoom);
     const y = Math.floor((py + Math.round(camera.y * camera.zoom)) / camera.zoom);
     return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
@@ -381,14 +453,18 @@ function sizeView() {
 }
 
 function setZoom(value, anchorX, anchorY) {
-    const oldX = anchorX ?? field.width / 2;
-    const oldY = anchorY ?? field.height / 2;
+    const oldView = mapViewRect();
     const previousZoom = camera.zoom;
     camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
+    const newView = mapViewRect();
+    const oldX = Math.max(0, Math.min(oldView.width, (anchorX ?? field.width / 2) - oldView.left));
+    const oldY = Math.max(0, Math.min(oldView.height, (anchorY ?? field.height / 2) - oldView.top));
+    const newX = Math.max(0, Math.min(newView.width, (anchorX ?? field.width / 2) - newView.left));
+    const newY = Math.max(0, Math.min(newView.height, (anchorY ?? field.height / 2) - newView.top));
     zoom.value = String(camera.zoom);
     zoomOut.disabled = zoom.selectedIndex === 0;
     zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
-    moveCamera(oldX * (1 / previousZoom - 1 / camera.zoom), oldY * (1 / previousZoom - 1 / camera.zoom));
+    moveCamera(oldX / previousZoom - newX / camera.zoom, oldY / previousZoom - newY / camera.zoom);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
