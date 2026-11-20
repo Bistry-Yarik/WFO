@@ -36,6 +36,8 @@ function organicBoost(cell, base) {
     return Math.min(base * factor, Math.max(0, energy - 2 * ENERGY_UPKEEP * STEP));
 }
 
+const NIGHT_ENERGY_RATE = 50;
+const NIGHT_ORGANIC_RATE = 5;
 const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
 const DIFFUSION_TICKS = 5;
@@ -418,6 +420,10 @@ export class Simulation {
             cell.age += STEP;
             if (cell.type === 'seed' && cell.age >= 2) cell.type = 'channel';
             if (cell.type === 'organic' || cell.type === 'energy') this.collect(cell, cell.type);
+            if (!daylight && cell.type === 'chlorophyll') {
+                cell.energy += NIGHT_ENERGY_RATE * STEP * productionFactor(cell.energy, this.limits);
+                cell.organic += NIGHT_ORGANIC_RATE * STEP * productionFactor(cell.organic, this.limits);
+            }
         }
 
         for (const cell of existing) {
