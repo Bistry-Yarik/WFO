@@ -188,12 +188,6 @@ function viewScale() {
     return camera.zoom * Math.min(field.width / simulation.width, field.height / simulation.height);
 }
 
-function mapViewRect(pixelsPerCell = viewScale()) {
-    const width = Math.min(field.width, simulation.width * pixelsPerCell);
-    const height = Math.min(field.height, simulation.height * pixelsPerCell);
-    return { width, height, left: Math.floor((field.width - width) / 2), top: Math.floor((field.height - height) / 2) };
-}
-
 function drawOverview() {
     const pixels = terrainPixels.data;
     const palette = new Map();
@@ -238,18 +232,15 @@ function draw() {
         pixels[offset + 3] = 255;
     }
     const tile = pixelsPerCell <= OVERVIEW_MAX_ZOOM ? drawOverview() : drawDetailedWorld();
-    const view = mapViewRect(pixelsPerCell);
-    screen.fillStyle = '#101d18';
-    screen.fillRect(0, 0, field.width, field.height);
-    const left = view.left - Math.round(camera.x * pixelsPerCell);
-    const top = view.top - Math.round(camera.y * pixelsPerCell);
+    const left = -Math.round(camera.x * pixelsPerCell);
+    const top = -Math.round(camera.y * pixelsPerCell);
     const pattern = screen.createPattern(tile, 'repeat');
     pattern.setTransform(new DOMMatrix().translate(left, top).scale(
         simulation.width * pixelsPerCell / tile.width,
         simulation.height * pixelsPerCell / tile.height
     ));
     screen.fillStyle = pattern;
-    screen.fillRect(view.left, view.top, view.width, view.height);
+    screen.fillRect(0, 0, field.width, field.height);
 }
 
 function drawDetailedWorld() {
@@ -334,10 +325,9 @@ function moveCamera(dx, dy) {
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
     const pixelsPerCell = viewScale();
-    const view = mapViewRect(pixelsPerCell);
-    const px = event.clientX - rect.left - view.left;
-    const py = event.clientY - rect.top - view.top;
-    if (px < 0 || py < 0 || px >= view.width || py >= view.height) return -1;
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
     const x = Math.floor((px + Math.round(camera.x * pixelsPerCell)) / pixelsPerCell);
     const y = Math.floor((py + Math.round(camera.y * pixelsPerCell)) / pixelsPerCell);
     return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
@@ -426,33 +416,25 @@ function sizeView() {
     const height = Math.max(1, viewport.clientHeight);
     if (field.width === width && field.height === height) return;
     const previousScale = viewScale();
-    const previousView = mapViewRect(previousScale);
+    const centerX = field.width / (2 * previousScale);
+    const centerY = field.height / (2 * previousScale);
     field.width = width;
     field.height = height;
     const nextScale = viewScale();
-    const nextView = mapViewRect(nextScale);
-    moveCamera(
-        previousView.width / (2 * previousScale) - nextView.width / (2 * nextScale),
-        previousView.height / (2 * previousScale) - nextView.height / (2 * nextScale)
-    );
+    moveCamera(centerX - width / (2 * nextScale), centerY - height / (2 * nextScale));
     screen.imageSmoothingEnabled = false;
 }
 
-function setZoom(value, anchorX, anchorY) {
+function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
     const previousScale = viewScale();
-    const oldView = mapViewRect(previousScale);
     const previousZoom = camera.zoom;
     camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
     const nextScale = viewScale();
-    const newView = mapViewRect(nextScale);
-    const oldX = Math.max(0, Math.min(oldView.width, (anchorX ?? field.width / 2) - oldView.left));
-    const oldY = Math.max(0, Math.min(oldView.height, (anchorY ?? field.height / 2) - oldView.top));
-    const newX = Math.max(0, Math.min(newView.width, (anchorX ?? field.width / 2) - newView.left));
-    const newY = Math.max(0, Math.min(newView.height, (anchorY ?? field.height / 2) - newView.top));
     zoom.value = String(camera.zoom);
     zoomOut.disabled = zoom.selectedIndex === 0;
     zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
-    moveCamera(oldX / previousScale - newX / nextScale, oldY / previousScale - newY / nextScale);
+    const difference = 1 / previousScale - 1 / nextScale;
+    moveCamera(anchorX * difference, anchorY * difference);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
