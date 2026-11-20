@@ -10,6 +10,12 @@ const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
 const SEED_ORGANIC_DIVISOR = 3;
 const CONVERSION_RATE = 150;
+const PRODUCTION_SLOWDOWN = 1000;
+const PRODUCTION_STOP = 1500;
+
+function productionFactor(stock) {
+    return Math.max(0, Math.min(1, (PRODUCTION_STOP - stock) / (PRODUCTION_STOP - PRODUCTION_SLOWDOWN)));
+}
 const DAY_LENGTH = 450;
 const CYCLE_LENGTH = 600;
 const SLOW_DIFFUSION_TICKS = 5;
@@ -101,7 +107,7 @@ export class Simulation {
         const ground = this[resource];
         const x = cell.index % WIDTH;
         const y = Math.floor(cell.index / WIDTH);
-        let remaining = 50 * STEP;
+        let remaining = 50 * STEP * productionFactor(cell[resource]);
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
@@ -150,10 +156,12 @@ export class Simulation {
     }
 
     bite(cell) {
+        const capacity = BITE_RATE * STEP * productionFactor(cell.organic);
+        if (capacity === 0) return;
         for (const index of this.neighbors(cell.index)) {
             const target = this.cells.get(index);
             if (!target || target.colony.family === cell.colony.family || target.organic <= 0) continue;
-            const amount = Math.min(BITE_RATE * STEP, target.organic);
+            const amount = Math.min(capacity, target.organic);
             target.organic -= amount;
             cell.organic += amount;
             break;
@@ -244,7 +252,8 @@ export class Simulation {
             for (const cell of existing.sort((a, b) => a.index - b.index)) {
                 const x = cell.index % WIDTH;
                 if (cell.type === 'chlorophyll') {
-                    cell.energy += (shadedColumns.has(x) ? 50 : 150) * STEP;
+                    const lightRate = shadedColumns.has(x) ? 50 : 150;
+                    cell.energy += lightRate * STEP * productionFactor(cell.energy);
                 }
                 shadedColumns.add(x);
             }
@@ -296,7 +305,10 @@ export class Simulation {
                 continue;
             }
             if (cell.type === 'converter' && cell.energy > cell.organic) {
-                const amount = Math.min(CONVERSION_RATE * STEP, (cell.energy - cell.organic) / 2);
+                const amount = Math.min(
+                    CONVERSION_RATE * STEP * productionFactor(cell.organic),
+                    (cell.energy - cell.organic) / 2
+                );
                 cell.energy -= amount;
                 cell.organic += amount;
             }
