@@ -6,6 +6,7 @@ export const CHANNEL_FLOW_LIMIT = 2500;
 export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth'];
+const GENOME_LENGTH = 9;
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
 const MUTATION_CHANCE = 0.02;
@@ -54,6 +55,16 @@ for (let dy = -SEED_THROW_RANGE; dy <= SEED_THROW_RANGE; dy++) {
     }
 }
 
+function randomGenome(random) {
+    const types = ['chlorophyll', 'organic'];
+    if (random() < 0.5) types.reverse();
+    // The first two steps supply both resources. Later steps can repeat any type.
+    while (types.length < GENOME_LENGTH) {
+        types.push(TYPES[Math.floor(random() * TYPES.length)]);
+    }
+    return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
+}
+
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
@@ -86,10 +97,7 @@ export class Simulation {
         const index = y * WIDTH + x;
         if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
-        const genome = parent ? [...parent.genome] : [
-            'chlorophyll', 'organic', 'channel',
-            'seed', TYPES[Math.floor(this.random() * TYPES.length)]
-        ];
+        const genome = parent ? parent.genome.map(command => ({ ...command })) : randomGenome(this.random);
         const seedNeeds = parent ? { ...parent.seedNeeds } : {};
         if (!parent) {
             for (const trait of SEED_REQUIREMENT_TRAITS) {
@@ -99,12 +107,17 @@ export class Simulation {
         const exposure = Math.min(this.radiation[index] / RADIATION_MUTATION_LIMIT, 1);
         const mutationChance = MUTATION_CHANCE + exposure * (MAX_MUTATION_CHANCE - MUTATION_CHANCE);
         if (parent && this.random() < mutationChance) {
-            const locus = Math.floor(this.random() * (genome.length + SEED_REQUIREMENT_TRAITS.length));
+            const locus = Math.floor(this.random() * (2 * genome.length + SEED_REQUIREMENT_TRAITS.length));
             if (locus < genome.length) {
-                const alternatives = TYPES.filter(type => type !== genome[locus]);
-                genome[locus] = alternatives[Math.floor(this.random() * alternatives.length)];
+                const command = genome[locus];
+                const alternatives = TYPES.filter(type => type !== command.type);
+                command.type = alternatives[Math.floor(this.random() * alternatives.length)];
+            } else if (locus < 2 * genome.length) {
+                const command = genome[locus - genome.length];
+                const turn = 1 + Math.floor(this.random() * (DIRECTIONS.length - 1));
+                command.direction = (command.direction + turn) % DIRECTIONS.length;
             } else {
-                const trait = SEED_REQUIREMENT_TRAITS[locus - genome.length];
+                const trait = SEED_REQUIREMENT_TRAITS[locus - 2 * genome.length];
                 seedNeeds[trait] = randomRequirement(SEED_REQUIREMENT_BASE[trait], this.random, seedNeeds[trait]);
             }
             this.mutations++;
@@ -119,8 +132,7 @@ export class Simulation {
             hue: parent?.hue ?? (id * 137.508 + 25) % 360,
             family: parent?.family ?? id,
             genome,
-            seedNeeds,
-            orientation: parent?.orientation ?? Math.floor(this.random() * 4)
+            seedNeeds
         };
         this.colonies.set(id, colony);
         const seed = this.makeCell(index, 'seed', colony, parent ? cost.energy : 1350);
@@ -235,7 +247,7 @@ export class Simulation {
     }
 
     grow(cell) {
-        const type = cell.colony.genome[cell.gene % cell.colony.genome.length];
+        const { type, direction } = cell.colony.genome[cell.gene % cell.colony.genome.length];
         if (this.throwSeed(cell)) {
             if (type === 'seed') cell.gene++;
             return;
@@ -244,8 +256,7 @@ export class Simulation {
         const cost = type === 'channel' ? 50 : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : { energy: cost, organic: cost };
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
-        const rotation = (cell.colony.orientation + cell.gene) % 4;
-        const ordered = neighbors.slice(rotation).concat(neighbors.slice(0, rotation));
+        const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const index = ordered.find(candidate => candidate >= 0 && !this.cells.has(candidate));
         if (index === undefined) return;
 

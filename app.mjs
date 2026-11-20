@@ -25,6 +25,7 @@ const FRAME_SIMULATION_BUDGET = 8;
 const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
+const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
     organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы'
@@ -195,11 +196,16 @@ function updateReadout() {
     const cell = simulation.cells.get(hovered);
     const soil = `Почва ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     const needs = cell?.colony.seedNeeds;
-    const requirements = cell?.type === 'channel'
-        ? ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`
-        : '';
+    let channelDetails = '';
+    if (cell?.type === 'channel') {
+        const { genome } = cell.colony;
+        const step = cell.gene % genome.length;
+        const { type, direction } = genome[step];
+        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${directionIcons[direction]}`
+            + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
+    }
     inspect.textContent = cell
-        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${requirements} · ${soil}`
+        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${channelDetails} · ${soil}`
         : soil;
 }
 
