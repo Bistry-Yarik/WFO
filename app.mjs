@@ -1,21 +1,19 @@
-import { Simulation, WIDTH, HEIGHT, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
+import { Simulation, WIDTH, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE } from './simulation.mjs';
 
 const field = document.querySelector('#field');
 const screen = field.getContext('2d');
 const worldCanvas = document.createElement('canvas');
-worldCanvas.width = field.width;
-worldCanvas.height = field.height;
 const context = worldCanvas.getContext('2d');
-const scale = worldCanvas.width / WIDTH;
+const scale = 10;
 const terrain = document.createElement('canvas');
-terrain.width = WIDTH;
-terrain.height = HEIGHT;
 const terrainContext = terrain.getContext('2d');
-const terrainPixels = terrainContext.createImageData(WIDTH, HEIGHT);
-context.imageSmoothingEnabled = false;
+let terrainPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
+const zoomLevels = Array.from(zoom.options, option => Number(option.value));
+const fieldSizeForm = document.querySelector('#field-size');
+const fieldWidth = document.querySelector('#field-width');
 const viewport = document.querySelector('.viewport');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
@@ -55,9 +53,21 @@ let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
 
+function configureWorldCanvas() {
+    const { width, height } = simulation;
+    worldCanvas.width = width * scale;
+    worldCanvas.height = height * scale;
+    terrain.width = width;
+    terrain.height = height;
+    terrainPixels = terrainContext.createImageData(width, height);
+    context.imageSmoothingEnabled = false;
+    field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
+}
+
 function drawCell(cell) {
-    const x = (cell.index % WIDTH + 0.5) * scale;
-    const y = (Math.floor(cell.index / WIDTH) + 0.5) * scale;
+    const { width } = simulation;
+    const x = (cell.index % width + 0.5) * scale;
+    const y = (Math.floor(cell.index / width) + 0.5) * scale;
     const color = `hsl(${cell.colony.hue} 80% 70%)`;
     context.fillStyle = color;
     if (cell.type === 'channel') {
@@ -133,6 +143,7 @@ function wrappedArc(x, y, radius, start, end) {
 }
 
 function drawDeathEffects(now) {
+    const { width } = simulation;
     if (deathEffects.size === 0) return;
     context.save();
     context.lineWidth = 2;
@@ -143,8 +154,8 @@ function drawDeathEffects(now) {
             continue;
         }
 
-        const x = (index % WIDTH + 0.5) * scale;
-        const y = (Math.floor(index / WIDTH) + 0.5) * scale;
+        const x = (index % width + 0.5) * scale;
+        const y = (Math.floor(index / width) + 0.5) * scale;
         const expansion = effect.cause === 'excess' ? progress : 1 - progress;
         const radius = 2 + 16 * expansion;
         const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
@@ -167,13 +178,13 @@ function drawDeathEffects(now) {
 
 function draw() {
     const pixels = terrainPixels.data;
-    const { energy, organic, radiation, daylight } = simulation;
+    const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
+        const checker = (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -192,23 +203,20 @@ function draw() {
     const now = performance.now();
     drawDeathEffects(now);
     if (planted >= 0 && now < plantedUntil) {
-        const x = (planted % WIDTH + 0.5) * scale;
-        const y = (Math.floor(planted / WIDTH) + 0.5) * scale;
+        const x = (planted % width + 0.5) * scale;
+        const y = (Math.floor(planted / width) + 0.5) * scale;
         context.strokeStyle = '#fff';
         context.lineWidth = 2;
         context.beginPath();
         wrappedArc(x, y, 9, 0, Math.PI * 2);
         context.stroke();
     }
-    const tileWidth = WIDTH * camera.zoom;
-    const tileHeight = HEIGHT * camera.zoom;
     const left = -Math.round(camera.x * camera.zoom);
     const top = -Math.round(camera.y * camera.zoom);
-    for (let y = top; y < field.height; y += tileHeight) {
-        for (let x = left; x < field.width; x += tileWidth) {
-            screen.drawImage(worldCanvas, x, y, tileWidth, tileHeight);
-        }
-    }
+    const pattern = screen.createPattern(worldCanvas, 'repeat');
+    pattern.setTransform(new DOMMatrix().translate(left, top).scale(camera.zoom / scale));
+    screen.fillStyle = pattern;
+    screen.fillRect(0, 0, field.width, field.height);
 }
 
 const statRows = [
@@ -258,8 +266,8 @@ function wrap(value, size) {
 }
 
 function moveCamera(dx, dy) {
-    camera.x = wrap(camera.x + dx, WIDTH);
-    camera.y = wrap(camera.y + dy, HEIGHT);
+    camera.x = wrap(camera.x + dx, simulation.width);
+    camera.y = wrap(camera.y + dy, simulation.height);
 }
 
 function indexAt(event) {
@@ -269,15 +277,17 @@ function indexAt(event) {
     if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
     const x = Math.floor((px + Math.round(camera.x * camera.zoom)) / camera.zoom);
     const y = Math.floor((py + Math.round(camera.y * camera.zoom)) / camera.zoom);
-    return wrap(y, HEIGHT) * WIDTH + wrap(x, WIDTH);
+    return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
 }
 
 function plant(index) {
+    const { width } = simulation;
     if (index < 0) return;
     hovered = index;
-    if (simulation.seed(index % WIDTH, Math.floor(index / WIDTH))) {
+    if (simulation.seed(index % width, Math.floor(index / width))) {
         planted = index;
         plantedUntil = performance.now() + 700;
+        fieldSizeForm.hidden = true;
     }
     draw();
     updateReadout();
@@ -314,18 +324,19 @@ field.addEventListener('click', event => {
 });
 
 document.querySelector('#plant').addEventListener('click', () => {
+    const { width, height } = simulation;
     const rect = field.getBoundingClientRect();
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
     const center = indexAt({ clientX: x, clientY: y });
     let nearest = -1;
     let bestDistance = Infinity;
-    for (let index = 0; index < WIDTH * HEIGHT; index++) {
+    for (let index = 0; index < simulation.energy.length; index++) {
         if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
                 || simulation.organic[index] >= simulation.limits.soil) continue;
-        const dx = Math.abs(index % WIDTH - center % WIDTH);
-        const dy = Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
-        const distance = Math.min(dx, WIDTH - dx) + Math.min(dy, HEIGHT - dy);
+        const dx = Math.abs(index % width - center % width);
+        const dy = Math.abs(Math.floor(index / width) - Math.floor(center / width));
+        const distance = Math.min(dx, width - dx) + Math.min(dy, height - dy);
         if (distance < bestDistance) {
             nearest = index;
             bestDistance = distance;
@@ -355,25 +366,30 @@ function setZoom(value, anchorX, anchorY) {
     const oldX = anchorX ?? field.width / 2;
     const oldY = anchorY ?? field.height / 2;
     const previousZoom = camera.zoom;
-    camera.zoom = Math.max(1, Math.min(10, value));
+    camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
     zoom.value = String(camera.zoom);
-    zoomOut.disabled = camera.zoom === 1;
-    zoomIn.disabled = camera.zoom === 10;
+    zoomOut.disabled = zoom.selectedIndex === 0;
+    zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
     moveCamera(oldX * (1 / previousZoom - 1 / camera.zoom), oldY * (1 / previousZoom - 1 / camera.zoom));
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
-zoomOut.addEventListener('click', () => setZoom(Number(zoom.value) - 1));
-zoomIn.addEventListener('click', () => setZoom(Number(zoom.value) + 1));
+function stepZoom(direction, x, y) {
+    const next = zoom.selectedIndex + direction;
+    if (next >= 0 && next < zoomLevels.length) setZoom(zoomLevels[next], x, y);
+}
+
+zoomOut.addEventListener('click', () => stepZoom(-1));
+zoomIn.addEventListener('click', () => stepZoom(1));
 field.addEventListener('wheel', event => {
     if (!event.deltaY || event.ctrlKey) return;
     event.preventDefault();
     const rect = field.getBoundingClientRect();
-    setZoom(Number(zoom.value) - Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
+    stepZoom(-Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
     hovered = indexAt(event);
 }, { passive: false });
 sizeView();
-const fit = Math.floor(viewport.clientWidth / WIDTH);
+const fit = Math.max(1, Math.floor(viewport.clientWidth / WIDTH));
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
 new ResizeObserver(sizeView).observe(viewport);
 function validLimits(limits) {
@@ -463,13 +479,27 @@ window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
 speed.addEventListener('change', () => { elapsed = 0; });
-document.querySelector('#reset').addEventListener('click', () => {
+function restart(width) {
+    const resized = simulation.width !== width;
     deathEffects.clear();
-    simulation = new Simulation(Math.random, recordDeath, simulation.limits);
+    simulation = new Simulation(Math.random, recordDeath, simulation.limits, width);
+    if (resized) {
+        camera.x = 0;
+        camera.y = 0;
+        configureWorldCanvas();
+    }
     elapsed = 0;
     hovered = -1;
     planted = -1;
+    fieldWidth.value = width;
+    fieldSizeForm.hidden = false;
+}
+
+fieldSizeForm.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!fieldSizeForm.hidden && fieldWidth.validity.valid) restart(fieldWidth.valueAsNumber);
 });
+document.querySelector('#reset').addEventListener('click', () => restart(simulation.width));
 
 function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
@@ -493,6 +523,7 @@ function frame(now) {
     requestAnimationFrame(frame);
 }
 
+configureWorldCanvas();
 draw();
 updateReadout();
 document.querySelector('#startup').hidden = true;

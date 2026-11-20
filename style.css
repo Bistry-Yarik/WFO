@@ -82,3 +82,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
     min-height: 0;
     height: auto;
 }
+
+#field-size { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 12px; }
+#field-size[hidden] { display: none; }
+#field-width { width: 5em; min-height: 36px; font: inherit; }

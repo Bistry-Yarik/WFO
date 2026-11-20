@@ -89,6 +89,10 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
     min-height: 0;
     height: auto;
 }
+
+#field-size { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 12px; }
+#field-size[hidden] { display: none; }
+#field-width { width: 5em; min-height: 36px; font: inherit; }
 </style>
 </head>
 <body>
@@ -101,16 +105,21 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                 <div class="controls">
                     <button id="plant" type="button">Посадить семечко</button>
                     <button id="pause" type="button">Пауза</button>
-                    <label>Скорость <select id="speed"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option><option value="25">25×</option><option value="50">50×</option><option value="100">100×</option><option value="150">150×</option><option value="250">250×</option></select></label>
+                    <label>Скорость <select id="speed"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option><option value="25">25×</option><option value="50">50×</option><option value="100">100×</option><option value="150">150×</option><option value="250">250×</option><option value="500">500×</option><option value="750">750×</option><option value="1000">1000×</option></select></label>
                     <div class="zoom-controls" role="group" aria-label="Масштаб">
                         <button id="zoom-out" type="button" aria-label="Уменьшить масштаб">−</button>
-                        <select id="zoom" aria-label="Масштаб"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option><option value="6" selected>6×</option><option value="7">7×</option><option value="8">8×</option><option value="9">9×</option><option value="10">10×</option></select>
+                        <select id="zoom" aria-label="Масштаб"><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="0.75">0,75×</option><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option><option value="6" selected>6×</option><option value="7">7×</option><option value="8">8×</option><option value="9">9×</option><option value="10">10×</option><option value="15">15×</option><option value="20">20×</option><option value="30">30×</option></select>
                         <button id="zoom-in" type="button" aria-label="Увеличить масштаб">+</button>
                     </div>
                     <button id="fullscreen" type="button" aria-keyshortcuts="F11" aria-pressed="false">Во весь экран</button>
                     <button id="reset" type="button">Сбросить</button>
                 </div>
             </div>
+            <form id="field-size">
+                <label for="field-width">Ширина поля (пикс.)</label>
+                <input id="field-width" type="number" min="32" max="250" value="100" required>
+                <button type="submit">Задать размер</button>
+            </form>
             <p id="startup">Если игра не запустилась, скачайте этот HTML-файл и откройте его в браузере. Предпросмотр файла может блокировать JavaScript.</p>
             <div class="viewport"><canvas id="field" width="1000" height="640" aria-label="Поле 100 на 64 клетки. Нажмите, чтобы посадить семечко."></canvas></div>
             <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · WASD или перетаскивание — движение по полю</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
@@ -219,22 +228,20 @@ function randomGenome(random) {
     return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
 }
 
-function wrappedIndex(x, y) {
-    return ((y + HEIGHT) % HEIGHT) * WIDTH + (x + WIDTH) % WIDTH;
-}
-
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
 
 class Simulation {
-    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS) {
+    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS, width = WIDTH) {
         this.random = random;
         this.onDeath = onDeath;
         this.limits = limits;
+        this.width = width;
+        this.height = Math.round(width * HEIGHT / WIDTH);
         this.cells = new Map();
         this.colonies = new Map();
-        this.energy = new Float64Array(WIDTH * HEIGHT);
+        this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.diffusionBuffers = {
@@ -253,8 +260,8 @@ class Simulation {
     }
 
     seed(x, y, parent = null, cost = SEED_COST) {
-        const index = y * WIDTH + x;
-        if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT || this.cells.has(index)) return false;
+        const index = y * this.width + x;
+        if (x < 0 || x >= this.width || y < 0 || y >= this.height || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
         const genome = parent ? parent.genome.map(command => ({ ...command })) : randomGenome(this.random);
         const seedNeeds = parent ? { ...parent.seedNeeds } : {};
@@ -282,7 +289,7 @@ class Simulation {
             this.mutations++;
             for (let ny = y - 1; ny <= y + 1; ny++) {
                 for (let nx = x - 1; nx <= x + 1; nx++) {
-                    this.radiation[wrappedIndex(nx, ny)] /= 2;
+                    this.radiation[this.wrappedIndex(nx, ny)] /= 2;
                 }
             }
         }
@@ -304,16 +311,21 @@ class Simulation {
         return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
+    wrappedIndex(x, y) {
+        const { width, height } = this;
+        return ((y + height) % height) * width + (x + width) % width;
+    }
+
     neighbors(index) {
-        const x = index % WIDTH;
-        const y = Math.floor(index / WIDTH);
-        return DIRECTIONS.map(([dx, dy]) => wrappedIndex(x + dx, y + dy));
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        return DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
     }
 
     collect(cell, resource) {
         const ground = this[resource];
-        const x = cell.index % WIDTH;
-        const y = Math.floor(cell.index / WIDTH);
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
         const base = 50 * STEP * productionFactor(cell[resource], this.limits);
         const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
         let remaining = base + bonus;
@@ -321,7 +333,7 @@ class Simulation {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
                 const ny = y + dy;
-                const index = wrappedIndex(nx, ny);
+                const index = this.wrappedIndex(nx, ny);
                 const amount = Math.min(remaining, ground[index]);
                 ground[index] -= amount;
                 cell[resource] += amount;
@@ -332,6 +344,7 @@ class Simulation {
     }
 
     diffuse(resource, duration) {
+        const { width } = this;
         const ground = this[resource];
         const next = this.diffusionBuffers[resource];
         const fraction = DIFFUSION_RATES[resource] * duration;
@@ -340,11 +353,11 @@ class Simulation {
             const amount = ground[i];
             if (!amount) continue;
             const share = amount * fraction;
-            const x = i % WIDTH;
-            next[x === 0 ? i + WIDTH - 1 : i - 1] += share;
-            next[x === WIDTH - 1 ? i - WIDTH + 1 : i + 1] += share;
-            next[i < WIDTH ? i + ground.length - WIDTH : i - WIDTH] += share;
-            next[i >= ground.length - WIDTH ? i - ground.length + WIDTH : i + WIDTH] += share;
+            const x = i % width;
+            next[x === 0 ? i + width - 1 : i - 1] += share;
+            next[x === width - 1 ? i - width + 1 : i + 1] += share;
+            next[i < width ? i + ground.length - width : i - width] += share;
+            next[i >= ground.length - width ? i - ground.length + width : i + width] += share;
             next[i] += amount - 4 * share;
         }
         this[resource] = next;
@@ -369,14 +382,14 @@ class Simulation {
     throwSeed(cell) {
         const { throwEnergy, organic } = cell.colony.seedNeeds;
         if (cell.energy < throwEnergy || cell.organic < organic) return false;
-        const x = cell.index % WIDTH;
-        const y = Math.floor(cell.index / WIDTH);
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
             const [dx, dy] = THROW_OFFSETS[(start + i) % THROW_OFFSETS.length];
-            const index = wrappedIndex(x + dx, y + dy);
-            const nx = index % WIDTH;
-            const ny = Math.floor(index / WIDTH);
+            const index = this.wrappedIndex(x + dx, y + dy);
+            const nx = index % this.width;
+            const ny = Math.floor(index / this.width);
             if (this.energy[index] >= this.limits.soil || this.organic[index] >= this.limits.soil) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
@@ -411,7 +424,7 @@ class Simulation {
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
 
         if (type === 'seed') {
-            this.seed(index % WIDTH, Math.floor(index / WIDTH), cell.colony);
+            this.seed(index % this.width, Math.floor(index / this.width), cell.colony);
             cell.energy -= SEED_COST.energy;
             cell.organic -= SEED_COST.organic;
         } else {
@@ -458,7 +471,7 @@ class Simulation {
         if (this.daylight) {
             // Sunlight comes from above the field.
             for (const cell of existing.sort((a, b) => a.index - b.index)) {
-                const x = cell.index % WIDTH;
+                const x = cell.index % this.width;
                 if (cell.type === 'chlorophyll') {
                     const lightRate = shadedColumns.has(x) ? 50 : 150;
                     cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
@@ -553,19 +566,17 @@ class Simulation {
 const field = document.querySelector('#field');
 const screen = field.getContext('2d');
 const worldCanvas = document.createElement('canvas');
-worldCanvas.width = field.width;
-worldCanvas.height = field.height;
 const context = worldCanvas.getContext('2d');
-const scale = worldCanvas.width / WIDTH;
+const scale = 10;
 const terrain = document.createElement('canvas');
-terrain.width = WIDTH;
-terrain.height = HEIGHT;
 const terrainContext = terrain.getContext('2d');
-const terrainPixels = terrainContext.createImageData(WIDTH, HEIGHT);
-context.imageSmoothingEnabled = false;
+let terrainPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
 const zoom = document.querySelector('#zoom');
+const zoomLevels = Array.from(zoom.options, option => Number(option.value));
+const fieldSizeForm = document.querySelector('#field-size');
+const fieldWidth = document.querySelector('#field-width');
 const viewport = document.querySelector('.viewport');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
@@ -605,9 +616,21 @@ let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
 
+function configureWorldCanvas() {
+    const { width, height } = simulation;
+    worldCanvas.width = width * scale;
+    worldCanvas.height = height * scale;
+    terrain.width = width;
+    terrain.height = height;
+    terrainPixels = terrainContext.createImageData(width, height);
+    context.imageSmoothingEnabled = false;
+    field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
+}
+
 function drawCell(cell) {
-    const x = (cell.index % WIDTH + 0.5) * scale;
-    const y = (Math.floor(cell.index / WIDTH) + 0.5) * scale;
+    const { width } = simulation;
+    const x = (cell.index % width + 0.5) * scale;
+    const y = (Math.floor(cell.index / width) + 0.5) * scale;
     const color = `hsl(${cell.colony.hue} 80% 70%)`;
     context.fillStyle = color;
     if (cell.type === 'channel') {
@@ -683,6 +706,7 @@ function wrappedArc(x, y, radius, start, end) {
 }
 
 function drawDeathEffects(now) {
+    const { width } = simulation;
     if (deathEffects.size === 0) return;
     context.save();
     context.lineWidth = 2;
@@ -693,8 +717,8 @@ function drawDeathEffects(now) {
             continue;
         }
 
-        const x = (index % WIDTH + 0.5) * scale;
-        const y = (Math.floor(index / WIDTH) + 0.5) * scale;
+        const x = (index % width + 0.5) * scale;
+        const y = (Math.floor(index / width) + 0.5) * scale;
         const expansion = effect.cause === 'excess' ? progress : 1 - progress;
         const radius = 2 + 16 * expansion;
         const both = effect.resources === (ENERGY_RESOURCE | ORGANIC_RESOURCE);
@@ -717,13 +741,13 @@ function drawDeathEffects(now) {
 
 function draw() {
     const pixels = terrainPixels.data;
-    const { energy, organic, radiation, daylight } = simulation;
+    const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] / soilLimit, 1);
-        const checker = (index % WIDTH + Math.floor(index / WIDTH)) % 2 === 0 ? 4 : 0;
+        const checker = (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const pale = Math.max(energy[index], organic[index], radiation[index]) >= soilLimit ? 0.46 : 0;
         pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
@@ -742,23 +766,20 @@ function draw() {
     const now = performance.now();
     drawDeathEffects(now);
     if (planted >= 0 && now < plantedUntil) {
-        const x = (planted % WIDTH + 0.5) * scale;
-        const y = (Math.floor(planted / WIDTH) + 0.5) * scale;
+        const x = (planted % width + 0.5) * scale;
+        const y = (Math.floor(planted / width) + 0.5) * scale;
         context.strokeStyle = '#fff';
         context.lineWidth = 2;
         context.beginPath();
         wrappedArc(x, y, 9, 0, Math.PI * 2);
         context.stroke();
     }
-    const tileWidth = WIDTH * camera.zoom;
-    const tileHeight = HEIGHT * camera.zoom;
     const left = -Math.round(camera.x * camera.zoom);
     const top = -Math.round(camera.y * camera.zoom);
-    for (let y = top; y < field.height; y += tileHeight) {
-        for (let x = left; x < field.width; x += tileWidth) {
-            screen.drawImage(worldCanvas, x, y, tileWidth, tileHeight);
-        }
-    }
+    const pattern = screen.createPattern(worldCanvas, 'repeat');
+    pattern.setTransform(new DOMMatrix().translate(left, top).scale(camera.zoom / scale));
+    screen.fillStyle = pattern;
+    screen.fillRect(0, 0, field.width, field.height);
 }
 
 const statRows = [
@@ -808,8 +829,8 @@ function wrap(value, size) {
 }
 
 function moveCamera(dx, dy) {
-    camera.x = wrap(camera.x + dx, WIDTH);
-    camera.y = wrap(camera.y + dy, HEIGHT);
+    camera.x = wrap(camera.x + dx, simulation.width);
+    camera.y = wrap(camera.y + dy, simulation.height);
 }
 
 function indexAt(event) {
@@ -819,15 +840,17 @@ function indexAt(event) {
     if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
     const x = Math.floor((px + Math.round(camera.x * camera.zoom)) / camera.zoom);
     const y = Math.floor((py + Math.round(camera.y * camera.zoom)) / camera.zoom);
-    return wrap(y, HEIGHT) * WIDTH + wrap(x, WIDTH);
+    return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
 }
 
 function plant(index) {
+    const { width } = simulation;
     if (index < 0) return;
     hovered = index;
-    if (simulation.seed(index % WIDTH, Math.floor(index / WIDTH))) {
+    if (simulation.seed(index % width, Math.floor(index / width))) {
         planted = index;
         plantedUntil = performance.now() + 700;
+        fieldSizeForm.hidden = true;
     }
     draw();
     updateReadout();
@@ -864,18 +887,19 @@ field.addEventListener('click', event => {
 });
 
 document.querySelector('#plant').addEventListener('click', () => {
+    const { width, height } = simulation;
     const rect = field.getBoundingClientRect();
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
     const center = indexAt({ clientX: x, clientY: y });
     let nearest = -1;
     let bestDistance = Infinity;
-    for (let index = 0; index < WIDTH * HEIGHT; index++) {
+    for (let index = 0; index < simulation.energy.length; index++) {
         if (simulation.cells.has(index) || simulation.energy[index] >= simulation.limits.soil
                 || simulation.organic[index] >= simulation.limits.soil) continue;
-        const dx = Math.abs(index % WIDTH - center % WIDTH);
-        const dy = Math.abs(Math.floor(index / WIDTH) - Math.floor(center / WIDTH));
-        const distance = Math.min(dx, WIDTH - dx) + Math.min(dy, HEIGHT - dy);
+        const dx = Math.abs(index % width - center % width);
+        const dy = Math.abs(Math.floor(index / width) - Math.floor(center / width));
+        const distance = Math.min(dx, width - dx) + Math.min(dy, height - dy);
         if (distance < bestDistance) {
             nearest = index;
             bestDistance = distance;
@@ -905,25 +929,30 @@ function setZoom(value, anchorX, anchorY) {
     const oldX = anchorX ?? field.width / 2;
     const oldY = anchorY ?? field.height / 2;
     const previousZoom = camera.zoom;
-    camera.zoom = Math.max(1, Math.min(10, value));
+    camera.zoom = zoomLevels.includes(value) ? value : previousZoom;
     zoom.value = String(camera.zoom);
-    zoomOut.disabled = camera.zoom === 1;
-    zoomIn.disabled = camera.zoom === 10;
+    zoomOut.disabled = zoom.selectedIndex === 0;
+    zoomIn.disabled = zoom.selectedIndex === zoomLevels.length - 1;
     moveCamera(oldX * (1 / previousZoom - 1 / camera.zoom), oldY * (1 / previousZoom - 1 / camera.zoom));
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
-zoomOut.addEventListener('click', () => setZoom(Number(zoom.value) - 1));
-zoomIn.addEventListener('click', () => setZoom(Number(zoom.value) + 1));
+function stepZoom(direction, x, y) {
+    const next = zoom.selectedIndex + direction;
+    if (next >= 0 && next < zoomLevels.length) setZoom(zoomLevels[next], x, y);
+}
+
+zoomOut.addEventListener('click', () => stepZoom(-1));
+zoomIn.addEventListener('click', () => stepZoom(1));
 field.addEventListener('wheel', event => {
     if (!event.deltaY || event.ctrlKey) return;
     event.preventDefault();
     const rect = field.getBoundingClientRect();
-    setZoom(Number(zoom.value) - Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
+    stepZoom(-Math.sign(event.deltaY), event.clientX - rect.left, event.clientY - rect.top);
     hovered = indexAt(event);
 }, { passive: false });
 sizeView();
-const fit = Math.floor(viewport.clientWidth / WIDTH);
+const fit = Math.max(1, Math.floor(viewport.clientWidth / WIDTH));
 setZoom(Math.min(Number(zoom.value), fit), 0, 0);
 new ResizeObserver(sizeView).observe(viewport);
 function validLimits(limits) {
@@ -1013,13 +1042,27 @@ window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
 speed.addEventListener('change', () => { elapsed = 0; });
-document.querySelector('#reset').addEventListener('click', () => {
+function restart(width) {
+    const resized = simulation.width !== width;
     deathEffects.clear();
-    simulation = new Simulation(Math.random, recordDeath, simulation.limits);
+    simulation = new Simulation(Math.random, recordDeath, simulation.limits, width);
+    if (resized) {
+        camera.x = 0;
+        camera.y = 0;
+        configureWorldCanvas();
+    }
     elapsed = 0;
     hovered = -1;
     planted = -1;
+    fieldWidth.value = width;
+    fieldSizeForm.hidden = false;
+}
+
+fieldSizeForm.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!fieldSizeForm.hidden && fieldWidth.validity.valid) restart(fieldWidth.valueAsNumber);
 });
+document.querySelector('#reset').addEventListener('click', () => restart(simulation.width));
 
 function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
@@ -1043,6 +1086,7 @@ function frame(now) {
     requestAnimationFrame(frame);
 }
 
+configureWorldCanvas();
 draw();
 updateReadout();
 document.querySelector('#startup').hidden = true;

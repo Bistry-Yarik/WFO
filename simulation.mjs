@@ -63,22 +63,20 @@ function randomGenome(random) {
     return types.map(type => ({ type, direction: Math.floor(random() * DIRECTIONS.length) }));
 }
 
-function wrappedIndex(x, y) {
-    return ((y + HEIGHT) % HEIGHT) * WIDTH + (x + WIDTH) % WIDTH;
-}
-
 function resourceMask(energy, organic) {
     return (energy ? ENERGY_RESOURCE : 0) | (organic ? ORGANIC_RESOURCE : 0);
 }
 
 export class Simulation {
-    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS) {
+    constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS, width = WIDTH) {
         this.random = random;
         this.onDeath = onDeath;
         this.limits = limits;
+        this.width = width;
+        this.height = Math.round(width * HEIGHT / WIDTH);
         this.cells = new Map();
         this.colonies = new Map();
-        this.energy = new Float64Array(WIDTH * HEIGHT);
+        this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);
         this.diffusionBuffers = {
@@ -97,8 +95,8 @@ export class Simulation {
     }
 
     seed(x, y, parent = null, cost = SEED_COST) {
-        const index = y * WIDTH + x;
-        if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT || this.cells.has(index)) return false;
+        const index = y * this.width + x;
+        if (x < 0 || x >= this.width || y < 0 || y >= this.height || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
         const genome = parent ? parent.genome.map(command => ({ ...command })) : randomGenome(this.random);
         const seedNeeds = parent ? { ...parent.seedNeeds } : {};
@@ -126,7 +124,7 @@ export class Simulation {
             this.mutations++;
             for (let ny = y - 1; ny <= y + 1; ny++) {
                 for (let nx = x - 1; nx <= x + 1; nx++) {
-                    this.radiation[wrappedIndex(nx, ny)] /= 2;
+                    this.radiation[this.wrappedIndex(nx, ny)] /= 2;
                 }
             }
         }
@@ -148,16 +146,21 @@ export class Simulation {
         return { index, type, colony, energy: reserve, organic: reserve, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
+    wrappedIndex(x, y) {
+        const { width, height } = this;
+        return ((y + height) % height) * width + (x + width) % width;
+    }
+
     neighbors(index) {
-        const x = index % WIDTH;
-        const y = Math.floor(index / WIDTH);
-        return DIRECTIONS.map(([dx, dy]) => wrappedIndex(x + dx, y + dy));
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        return DIRECTIONS.map(([dx, dy]) => this.wrappedIndex(x + dx, y + dy));
     }
 
     collect(cell, resource) {
         const ground = this[resource];
-        const x = cell.index % WIDTH;
-        const y = Math.floor(cell.index / WIDTH);
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
         const base = 50 * STEP * productionFactor(cell[resource], this.limits);
         const bonus = resource === 'organic' ? base * boostFactor(cell.energy) : 0;
         let remaining = base + bonus;
@@ -165,7 +168,7 @@ export class Simulation {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
                 const nx = x + dx;
                 const ny = y + dy;
-                const index = wrappedIndex(nx, ny);
+                const index = this.wrappedIndex(nx, ny);
                 const amount = Math.min(remaining, ground[index]);
                 ground[index] -= amount;
                 cell[resource] += amount;
@@ -176,6 +179,7 @@ export class Simulation {
     }
 
     diffuse(resource, duration) {
+        const { width } = this;
         const ground = this[resource];
         const next = this.diffusionBuffers[resource];
         const fraction = DIFFUSION_RATES[resource] * duration;
@@ -184,11 +188,11 @@ export class Simulation {
             const amount = ground[i];
             if (!amount) continue;
             const share = amount * fraction;
-            const x = i % WIDTH;
-            next[x === 0 ? i + WIDTH - 1 : i - 1] += share;
-            next[x === WIDTH - 1 ? i - WIDTH + 1 : i + 1] += share;
-            next[i < WIDTH ? i + ground.length - WIDTH : i - WIDTH] += share;
-            next[i >= ground.length - WIDTH ? i - ground.length + WIDTH : i + WIDTH] += share;
+            const x = i % width;
+            next[x === 0 ? i + width - 1 : i - 1] += share;
+            next[x === width - 1 ? i - width + 1 : i + 1] += share;
+            next[i < width ? i + ground.length - width : i - width] += share;
+            next[i >= ground.length - width ? i - ground.length + width : i + width] += share;
             next[i] += amount - 4 * share;
         }
         this[resource] = next;
@@ -213,14 +217,14 @@ export class Simulation {
     throwSeed(cell) {
         const { throwEnergy, organic } = cell.colony.seedNeeds;
         if (cell.energy < throwEnergy || cell.organic < organic) return false;
-        const x = cell.index % WIDTH;
-        const y = Math.floor(cell.index / WIDTH);
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
             const [dx, dy] = THROW_OFFSETS[(start + i) % THROW_OFFSETS.length];
-            const index = wrappedIndex(x + dx, y + dy);
-            const nx = index % WIDTH;
-            const ny = Math.floor(index / WIDTH);
+            const index = this.wrappedIndex(x + dx, y + dy);
+            const nx = index % this.width;
+            const ny = Math.floor(index / this.width);
             if (this.energy[index] >= this.limits.soil || this.organic[index] >= this.limits.soil) continue;
             if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
             cell.energy -= THROWN_SEED_COST.energy;
@@ -255,7 +259,7 @@ export class Simulation {
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
 
         if (type === 'seed') {
-            this.seed(index % WIDTH, Math.floor(index / WIDTH), cell.colony);
+            this.seed(index % this.width, Math.floor(index / this.width), cell.colony);
             cell.energy -= SEED_COST.energy;
             cell.organic -= SEED_COST.organic;
         } else {
@@ -302,7 +306,7 @@ export class Simulation {
         if (this.daylight) {
             // Sunlight comes from above the field.
             for (const cell of existing.sort((a, b) => a.index - b.index)) {
-                const x = cell.index % WIDTH;
+                const x = cell.index % this.width;
                 if (cell.type === 'chlorophyll') {
                     const lightRate = shadedColumns.has(x) ? 50 : 150;
                     cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
