@@ -413,6 +413,34 @@ export class Simulation {
         return site;
     }
 
+    findToothHost(candidates, family) {
+        for (const index of candidates) {
+            const target = this.cells.get(index);
+            if (target && target.colony.family !== family
+                    && !this.parasites.has(index) && this.isSeedSiteSafe(index)) return target;
+        }
+        return null;
+    }
+
+    moveToothOntoEnemy(cell) {
+        if (cell.colony.thirsty || cell.energy <= CHANNEL_COST.energy + ENERGY_UPKEEP * STEP
+                || cell.organic <= CHANNEL_COST.organic + ORGANIC_UPKEEP * STEP) return;
+        const host = this.findToothHost(this.neighbors(cell.index), cell.colony.family);
+        if (!host) return;
+
+        const origin = cell.index;
+        const channel = this.makeCell(origin, 'channel', cell.colony, CHANNEL_COST.energy, CHANNEL_COST.organic);
+        cell.energy -= channel.energy;
+        cell.organic -= channel.organic;
+        cell.index = host.index;
+        cell.host = host;
+        cell.lastWorkAge = cell.age;
+        this.cells.set(origin, channel);
+        this.parasites.set(host.index, cell);
+        this.tickCells = null;
+        this.onBirth?.(origin);
+    }
+
     grow(cell) {
         if (cell.colony.thirsty) return;
         const { type, direction, preferBuild, branchStep, seekRadiation } = cell.colony.genome[cell.gene % cell.colony.genome.length];
@@ -421,9 +449,7 @@ export class Simulation {
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const biting = Boolean(TOOTH_RESOURCE[type]);
-        const host = biting ? ordered.map(index => this.cells.get(index)).find(target =>
-            target && target.colony.family !== cell.colony.family
-            && !this.parasites.has(target.index) && this.isSeedSiteSafe(target.index)) : null;
+        const host = biting ? this.findToothHost(ordered, cell.colony.family) : null;
         const index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
             if (type === 'seed') return this.isSeedSiteSafe(candidate);
@@ -588,6 +614,9 @@ export class Simulation {
             this.colonies.clear();
             this.transfers.length = 0;
             return;
+        }
+        for (const cell of this.cells.values()) {
+            if (TOOTH_RESOURCE[cell.type]) this.moveToothOntoEnemy(cell);
         }
         const daylight = this.daylight;
         const needsColonyCleanup = this.tickCells === null;
