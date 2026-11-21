@@ -70,13 +70,14 @@ const overviewColors = {
     energy: [105, 179, 255],
     converter: [197, 138, 255],
     teeth: [165, 43, 58],
+    blueTeeth: [47, 108, 224],
     cleaner: [255, 198, 91],
     stomach: [255, 152, 51]
 };
 const directionIcons = ['↑', '→', '↓', '←'];
 const names = {
     adaptive: 'Сборщик по ресурсам', seed: 'Семечко', channel: 'Канал', chlorophyll: 'Хлорофилл',
-    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', cleaner: 'Очиститель радиации', stomach: 'Желудок'
+    organic: 'Сборщик органики', energy: 'Сборщик энергии', converter: 'Преобразователь', teeth: 'Зубы', blueTeeth: 'Синие зубы', cleaner: 'Очиститель радиации', stomach: 'Желудок'
 };
 
 const deathEffects = new Map();
@@ -161,8 +162,8 @@ function drawCell(cell, target = context) {
         target.lineTo(x, y + 4.3);
         target.lineTo(x - 4.3, y);
         target.fill();
-    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner' || cell.type === 'stomach') {
-        const sides = { teeth: 3, converter: 5, cleaner: 6, stomach: 10 }[cell.type];
+    } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'blueTeeth' || cell.type === 'cleaner' || cell.type === 'stomach') {
+        const sides = { teeth: 3, blueTeeth: 3, converter: 5, cleaner: 6, stomach: 10 }[cell.type];
         target.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
         target.beginPath();
         for (let point = 0; point < sides; point++) {
@@ -250,7 +251,7 @@ function drawOverview() {
         }
         pixels.set(color, index * 4);
     }
-    for (const index of simulation.parasites.keys()) pixels.set(overviewColors.teeth, index * 4);
+    for (const [index, parasite] of simulation.parasites) pixels.set(overviewColors[parasite.type], index * 4);
     terrainContext.putImageData(terrainPixels, 0, 0);
     terrainContext.save();
     terrainContext.scale(1 / scale, 1 / scale);
@@ -415,7 +416,7 @@ function updateReadout() {
     const cell = simulation.cells.get(hovered);
     const soil = `Вода ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
     const parasite = simulation.parasites.get(hovered);
-    const parasiteDetails = parasite ? ` · Зубы-паразит · орг. ${Math.floor(parasite.organic)}` : '';
+    const parasiteDetails = parasite ? ` · ${names[parasite.type]} (паразит) · ⚡ ${Math.floor(parasite.energy)} / орг. ${Math.floor(parasite.organic)}` : '';
     const needs = cell?.colony.seedNeeds;
     const thirst = cell?.colony.thirsty ? ' · Жажда органики' : '';
     let channelDetails = '';

@@ -8,7 +8,7 @@ export const ENERGY_RESOURCE = 1;
 export const ORGANIC_RESOURCE = 2;
 export const RADIATION_RESOURCE = 4;
 const RADIATION_LETHAL_ABOVE = 999;
-export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'cleaner', 'stomach'];
+export const TYPES = ['chlorophyll', 'organic', 'energy', 'channel', 'seed', 'converter', 'teeth', 'blueTeeth', 'cleaner', 'stomach'];
 const GENOME_LENGTH = 9;
 const MUTATION_TYPES = [...TYPES, 'adaptive'];
 export const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -48,6 +48,7 @@ const CYCLE_LENGTH = 600;
 const DIFFUSION_TICKS = 5;
 const DIFFUSION_RATES = { energy: 0.006, organic: 0.0002, radiation: 0.002 };
 const BITE_RATE = 1000;
+const TOOTH_RESOURCE = { teeth: 'organic', blueTeeth: 'energy' };
 const CELL_COST = { energy: 225, organic: 300 };
 const CHANNEL_COST = { energy: 40, organic: 50 };
 const SEED_COST = { energy: 170, organic: 75 };
@@ -84,7 +85,7 @@ function randomGenome(random) {
 const SPECIAL_PACKS = {
     solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed'],
     devourer: ['organic', 'stomach', 'channel', 'teeth', 'chlorophyll', 'organic', 'teeth', 'stomach', 'seed'],
-    electric: ['energy', 'chlorophyll', 'channel', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
+    electric: ['energy', 'chlorophyll', 'channel', 'blueTeeth', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
 };
 
 function packGenome(pack, random) {
@@ -94,6 +95,7 @@ function packGenome(pack, random) {
             { type: 'channel', direction: heading, preferBuild: true, branchStep: 0 },
             { type: 'adaptive', direction: (heading + 1) % 4, preferBuild: true },
             { type: 'teeth', direction: (heading + 3) % 4, preferBuild: true },
+            { type: 'blueTeeth', direction: (heading + 1) % 4, preferBuild: true },
             { type: 'chlorophyll', direction: (heading + 3) % 4 }
         ];
     }
@@ -329,18 +331,19 @@ export class Simulation {
     }
 
     bite(cell) {
-        const base = BITE_RATE * STEP * productionFactor(cell.organic, this.limits);
-        const capacity = base + organicBoost(cell, base);
+        const resource = TOOTH_RESOURCE[cell.type];
+        const base = BITE_RATE * STEP * productionFactor(cell[resource], this.limits);
+        const capacity = base + (resource === 'organic' ? organicBoost(cell, base) : 0);
         if (capacity === 0) {
             cell.lastWorkAge = cell.age;
             return;
         }
         for (const index of this.neighbors(cell.index)) {
             const target = this.cells.get(index);
-            if (!target || target.colony.family === cell.colony.family || target.organic <= 0) continue;
-            const amount = Math.min(capacity, target.organic);
-            target.organic -= amount;
-            cell.organic += amount;
+            if (!target || target.colony.family === cell.colony.family || target[resource] <= 0) continue;
+            const amount = Math.min(capacity, target[resource]);
+            target[resource] -= amount;
+            cell[resource] += amount;
             if (amount >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
             cell.energy -= Math.max(0, amount - base);
             break;
@@ -417,13 +420,14 @@ export class Simulation {
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const host = type === 'teeth' ? ordered.map(index => this.cells.get(index)).find(target =>
+        const biting = Boolean(TOOTH_RESOURCE[type]);
+        const host = biting ? ordered.map(index => this.cells.get(index)).find(target =>
             target && target.colony.family !== cell.colony.family
             && !this.parasites.has(target.index) && this.isSeedSiteSafe(target.index)) : null;
         const index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
             if (type === 'seed') return this.isSeedSiteSafe(candidate);
-            if (type !== 'teeth') return true;
+            if (!biting) return true;
             return this.neighbors(candidate).some(adjacent => {
                 const neighbor = this.cells.get(adjacent);
                 return neighbor && neighbor.colony.family !== cell.colony.family;
@@ -436,7 +440,7 @@ export class Simulation {
             return;
         }
         if (index === undefined) {
-            if (type === 'teeth' || seekRadiation) cell.gene++;
+            if (biting || seekRadiation) cell.gene++;
             return;
         }
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
@@ -560,6 +564,15 @@ export class Simulation {
         }
     }
 
+    interceptResource(receiver, resource, amount) {
+        const trap = !receiver.host && this.parasites.get(receiver.index);
+        if (!trap || TOOTH_RESOURCE[trap.type] !== resource || this.overloaded.has(trap.colony)) return;
+        const stolen = Math.min(amount, Math.max(0, this.limits.stop - trap[resource]));
+        trap[resource] += stolen;
+        receiver[resource] -= stolen;
+        if (stolen >= MIN_USEFUL_WORK) trap.lastWorkAge = trap.age;
+    }
+
     tick() {
         const tickNumber = Math.round(this.time / STEP) + 1;
         this.time = tickNumber * STEP;
@@ -618,7 +631,7 @@ export class Simulation {
         }
 
         for (const cell of existing) {
-            if (cell.type === 'teeth' && !cell.host) this.bite(cell);
+            if (TOOTH_RESOURCE[cell.type] && !cell.host) this.bite(cell);
         }
 
         // Compute transfers from the same snapshot so no cell spends incoming
@@ -631,15 +644,19 @@ export class Simulation {
                 transfer.energy = transfer.organic = 0;
                 continue;
             }
-            const energy = (cell.energy - neighbor.energy) * 0.025;
+            let sourceEnergy = cell.energy;
+            let targetEnergy = neighbor.energy;
             let sourceOrganic = cell.organic;
             let targetOrganic = neighbor.organic;
             if (parasites) {
                 const sourceTrap = !cell.host && parasites.get(cell.index);
                 const targetTrap = !neighbor.host && parasites.get(neighbor.index);
-                if (sourceTrap) sourceOrganic = Math.min(sourceOrganic, sourceTrap.organic);
-                if (targetTrap) targetOrganic = Math.min(targetOrganic, targetTrap.organic);
+                if (sourceTrap?.type === 'blueTeeth') sourceEnergy = Math.min(sourceEnergy, sourceTrap.energy);
+                else if (sourceTrap) sourceOrganic = Math.min(sourceOrganic, sourceTrap.organic);
+                if (targetTrap?.type === 'blueTeeth') targetEnergy = Math.min(targetEnergy, targetTrap.energy);
+                else if (targetTrap) targetOrganic = Math.min(targetOrganic, targetTrap.organic);
             }
+            const energy = (sourceEnergy - targetEnergy) * 0.025;
             const organic = (sourceOrganic - targetOrganic) * 0.025;
             const flow = (Math.abs(energy) + Math.abs(organic)) / STEP;
             transfer.energy = energy;
@@ -662,16 +679,12 @@ export class Simulation {
         for (const { cell, neighbor, energy, organic } of transfers) {
             if (energy === 0 && organic === 0) continue;
             if (overloaded.size && (overloaded.has(cell.colony) || overloaded.has(neighbor.colony))) continue;
+            if (parasites) {
+                if (energy) this.interceptResource(energy > 0 ? neighbor : cell, 'energy', Math.abs(energy));
+                if (organic) this.interceptResource(organic > 0 ? neighbor : cell, 'organic', Math.abs(organic));
+            }
             cell.energy -= energy;
             neighbor.energy += energy;
-            const receiver = organic > 0 ? neighbor : cell;
-            const trap = organic && !receiver.host && parasites?.get(receiver.index);
-            if (trap && !overloaded.has(trap.colony)) {
-                const stolen = Math.min(Math.abs(organic), Math.max(0, this.limits.stop - trap.organic));
-                trap.organic += stolen;
-                if (stolen >= MIN_USEFUL_WORK) trap.lastWorkAge = trap.age;
-                receiver.organic -= stolen;
-            }
             cell.organic -= organic;
             neighbor.organic += organic;
         }

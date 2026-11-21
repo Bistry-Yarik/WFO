@@ -43,7 +43,9 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .chlorophyll { background: #65e592; transform: rotate(45deg) scale(.8); }
 .organic { background: #f66b77; }
 .energy { background: #69b3ff; }
-.teeth { background: #a52b3a; clip-path: polygon(50% 0, 100% 95%, 0 95%); }
+.blue-teeth { background: #2f6ce0; }
+.teeth { background: #a52b3a; }
+.teeth, .blue-teeth { clip-path: polygon(50% 0, 100% 95%, 0 95%); }
 .stomach { background: #ff9833; clip-path: polygon(50% 0, 62% 37%, 100% 38%, 70% 60%, 80% 98%, 50% 75%, 20% 98%, 30% 60%, 0 38%, 38% 37%); }
 .cleaner { background: #ffc65b; clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%); }
 .converter { background: #c58aff; clip-path: polygon(50% 0, 98% 35%, 80% 100%, 20% 100%, 2% 35%); }
