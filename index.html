@@ -739,6 +739,30 @@ class Simulation {
         }
     }
 
+    fundWormGrowth(head, cost) {
+        const reserveTime = GROWTH_INTERVAL + STEP;
+        const energyNeeded = cost.energy + ENERGY_UPKEEP * reserveTime;
+        const organicNeeded = cost.organic + ORGANIC_UPKEEP * reserveTime;
+        if (head.energy >= energyNeeded && head.organic >= organicNeeded) return true;
+
+        // Only the tip can draw from the connected tail. Leave old segments a buffer for upkeep.
+        if (head.wormNext && this.cells.get(head.wormNext.index) === head.wormNext) return false;
+        let tail = head.wormPrevious;
+        while (tail && (head.energy < energyNeeded || head.organic < organicNeeded)
+                && this.cells.get(tail.index) === tail) {
+            const energy = Math.min(Math.max(0, energyNeeded - head.energy),
+                Math.max(0, tail.energy - ENERGY_UPKEEP * 10));
+            const organic = Math.min(Math.max(0, organicNeeded - head.organic),
+                Math.max(0, tail.organic - ORGANIC_THIRST_THRESHOLD));
+            tail.energy -= energy;
+            head.energy += energy;
+            tail.organic -= organic;
+            head.organic += organic;
+            tail = tail.wormPrevious;
+        }
+        return head.energy >= energyNeeded && head.organic >= organicNeeded;
+    }
+
     growWorm(cell, command) {
         const { wormRole, type, direction } = command;
         if (wormRole === 'turn') {
@@ -751,7 +775,7 @@ class Simulation {
         if (target) {
             if (wormRole === 'front' && target.colony.family !== cell.colony.family
                     && !this.parasites.has(index) && this.isSeedSiteSafe(index)
-                    && cell.energy >= CELL_COST.energy && cell.organic >= CELL_COST.organic) {
+                    && this.fundWormGrowth(cell, CELL_COST)) {
                 const toothType = target.energy > target.organic ? 'blueTeeth' : 'teeth';
                 const tooth = this.buildGrowthCell(cell, index, toothType, CELL_COST, target);
                 this.bite(tooth, target);
@@ -768,14 +792,23 @@ class Simulation {
         if (wormRole === 'right' && childType === 'energy' && (this.radiation[index] >= 150
                 || this.neighbors(index).some(site => this.radiation[site] >= 150))
                 && this.random() < 0.2) childType = 'cleaner';
-        if (wormRole === 'right' && childType === 'energy' && segment === 0) childType = 'chlorophyll';
+        if (wormRole === 'right' && childType === 'energy'
+                && (segment === 0 || (cell.energy < CELL_COST.energy && this.energy[index] < CELL_COST.energy))) {
+            childType = 'chlorophyll';
+        }
+        if (wormRole === 'left' && childType === 'organic'
+                && cell.organic < CELL_COST.organic && cell.energy >= CELL_COST.energy * 2) {
+            childType = 'converter';
+        }
 
         const cost = childType === 'channel' ? CHANNEL_COST : CELL_COST;
-        const reserveTime = GROWTH_INTERVAL + STEP;
-        if (cell.energy < cost.energy + ENERGY_UPKEEP * reserveTime
-                || cell.organic < cost.organic + ORGANIC_UPKEEP * reserveTime) return;
+        if (!this.fundWormGrowth(cell, cost)) return;
         const child = this.buildGrowthCell(cell, index, childType, cost, null, wormRole === 'front' ? 0 : null);
-        if (wormRole === 'front' && childType === 'channel') child.wormSegment = (segment + 1) % 4;
+        if (wormRole === 'front' && childType === 'channel') {
+            child.wormSegment = (segment + 1) % 4;
+            child.wormPrevious = cell;
+            cell.wormNext = child;
+        }
         cell.gene++;
     }
 
@@ -891,6 +924,8 @@ class Simulation {
     }
 
     removeCell(cell) {
+        if (cell.wormPrevious?.wormNext === cell) cell.wormPrevious.wormNext = null;
+        if (cell.wormNext?.wormPrevious === cell) cell.wormNext.wormPrevious = null;
         this.tickCells = null;
         if (cell.host) {
             this.parasites.delete(cell.index);
