@@ -1261,7 +1261,7 @@ class WorldAudio {
         const radiationLevel = level(radiation);
         this.nextClick = Math.max(time, this.nextClick);
         while (radiationLevel > 0 && this.nextClick < time + SOUND_UPDATE_MS / 1000) {
-            this.play('geiger', radiationLevel * 0.6, radiationPan / radiation, this.nextClick);
+            this.play('geiger', radiationLevel * 1.2, radiationPan / radiation, this.nextClick);
             this.nextClick += (0.65 + this.random() * 0.7) / (2 + 26 * radiationLevel);
         }
         for (const [kind, event] of Object.entries(this.events)) {
