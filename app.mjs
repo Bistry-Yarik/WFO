@@ -470,6 +470,22 @@ function setAngle(angle, anchorX = field.width / 2, anchorY = field.height / 2) 
     resetAngle.disabled = camera.angle === 0;
 }
 
+function rotateWithMouse(fromX, fromY, toX, toY) {
+    const rect = field.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const ax = fromX - centerX;
+    const ay = fromY - centerY;
+    const bx = toX - centerX;
+    const by = toY - centerY;
+    const deadZone = 8;
+    if (Math.hypot(ax, ay) < deadZone || Math.hypot(bx, by) < deadZone) return;
+    const cross = ax * by - ay * bx;
+    const dot = ax * bx + ay * by;
+    if (dot < 0 && Math.abs(cross) < deadZone * Math.hypot(bx - ax, by - ay)) return;
+    setAngle(camera.angle + Math.atan2(cross, dot));
+}
+
 resetAngle.addEventListener('click', () => setAngle(0));
 rotationEnabled.addEventListener('change', () => {
     if (!rotationEnabled.checked) setAngle(0);
@@ -569,7 +585,7 @@ if ('PointerEvent' in window) {
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
         if (press.rotating) {
-            if (rotationEnabled.checked) setAngle(camera.angle + dx * 0.012);
+            if (rotationEnabled.checked) rotateWithMouse(press.x, press.y, event.clientX, event.clientY);
         } else moveCameraByScreen(-dx, -dy);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
