@@ -28,7 +28,6 @@ const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
-const flowLegend = document.querySelector('#flow-legend');
 const zoomIn = document.querySelector('#zoom-in');
 const touch = matchMedia('(hover: none)').matches;
 const inspectHint = touch ? 'Коснитесь клетки, чтобы увидеть ресурсы' : 'Наведите на клетку, чтобы увидеть ресурсы';
@@ -55,9 +54,6 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
-const FLOW_DETAIL_ZOOM = 30;
-const FLOW_ENERGY_COLOR = '#47c4ff';
-const FLOW_ORGANIC_COLOR = '#ff626f';
 const RADIATION_PALE_LIMIT = 1000;
 const RADIATION_TINT_WEIGHT = 2.5;
 const resourceRingColors = [
@@ -95,7 +91,6 @@ let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
-let flowTime = 0;
 let simulationUpdatedAt = previous;
 let simulationTaskPending = false;
 let lastDraw = 0;
@@ -294,62 +289,6 @@ function draw() {
     ));
     screen.fillStyle = pattern;
     screen.fillRect(0, 0, field.width, field.height);
-    if (pixelsPerCell >= FLOW_DETAIL_ZOOM) drawChannelFlow(left, top);
-}
-
-function drawStream(x, y, dx, dy, amount, lane, phaseOffset, color) {
-    const magnitude = Math.abs(amount);
-    if (magnitude < 0.003) return;
-    const density = magnitude >= 40 ? 3 : magnitude >= 8 ? 2 : 1;
-    const phase = flowTime * (0.00105 + Math.min(magnitude, 100) * 0.000008) + phaseOffset;
-    const direction = Math.sign(amount);
-    const length = Math.min(0.13, 5 / camera.zoom);
-    screen.strokeStyle = color;
-    screen.beginPath();
-    for (let i = 0; i < density; i++) {
-        const cycle = (phase + i / density) % 1;
-        const position = 0.16 + 0.68 * (direction > 0 ? cycle : 1 - cycle);
-        const headX = x + dx * position;
-        const headY = y + dy * position;
-        screen.moveTo(headX - dx * direction * length - Math.sign(dy) * lane,
-            headY - dy * direction * length + Math.sign(dx) * lane);
-        screen.lineTo(headX - Math.sign(dy) * lane, headY + Math.sign(dx) * lane);
-    }
-    screen.stroke();
-}
-
-function drawChannelFlow(left, top) {
-    const { width, height, cells, transfers, overloaded } = simulation;
-    const pixels = camera.zoom;
-    const periodX = width * pixels;
-    const periodY = height * pixels;
-    const lane = Math.min(4, pixels * 0.045);
-    screen.save();
-    screen.lineWidth = Math.min(4, pixels * 0.08);
-    screen.lineCap = 'round';
-    for (const { cell, neighbor, energy, organic } of transfers) {
-        if (Math.abs(energy) < 0.003 && Math.abs(organic) < 0.003) continue;
-        const column = cell.index % width;
-        const row = Math.floor(cell.index / width);
-        const x = wrap(left + (column + 0.5) * pixels + pixels, periodX) - pixels;
-        const y = wrap(top + (row + 0.5) * pixels + pixels, periodY) - pixels;
-        if (x > field.width + pixels || y > field.height + pixels) continue;
-        if (cells.get(cell.index) !== cell || cells.get(neighbor.index) !== neighbor
-                || overloaded.has(cell.colony) || overloaded.has(neighbor.colony)) continue;
-
-        const horizontal = neighbor.index % width - column;
-        const vertical = Math.floor(neighbor.index / width) - row;
-        const dx = (Math.abs(horizontal) > 1 ? -Math.sign(horizontal) : horizontal) * pixels;
-        const dy = (Math.abs(vertical) > 1 ? -Math.sign(vertical) : vertical) * pixels;
-        const phase = cell.index * 0.017;
-        for (let copyY = y; copyY <= field.height + pixels; copyY += periodY) {
-            for (let copyX = x; copyX <= field.width + pixels; copyX += periodX) {
-                drawStream(copyX, copyY, dx, dy, energy, -lane, phase, FLOW_ENERGY_COLOR);
-                drawStream(copyX, copyY, dx, dy, organic, lane, phase + 0.35, FLOW_ORGANIC_COLOR);
-            }
-        }
-    }
-    screen.restore();
 }
 
 function drawDetailedWorld() {
@@ -603,7 +542,6 @@ function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
         if (!gestureZoomOption.parentNode) zoom.append(gestureZoomOption);
     }
     zoom.value = String(camera.zoom);
-    flowLegend.hidden = camera.zoom < FLOW_DETAIL_ZOOM;
     zoomOut.disabled = camera.zoom === minimum;
     zoomIn.disabled = camera.zoom === maximum;
     const difference = 1 / previousZoom - 1 / camera.zoom;
@@ -830,7 +768,6 @@ function frame(now) {
     if (!paused && !document.hidden && !simulationTaskPending) {
         runSimulationSlice(multiplier);
     }
-    if (!paused) flowTime += Math.max(0, now - previous);
     previous = now;
     worldAudio?.update(now, simulation, camera, field);
     if (!paused && now - speedSampleAt >= 750) {

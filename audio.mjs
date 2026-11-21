@@ -1,5 +1,10 @@
 const SOUND_UPDATE_MS = 110;
 const SOUND_EVENTS_PER_SAMPLE = 64;
+const SOUND_NEAR_ZOOM = 120;
+
+function soundStrength(amount, reference) {
+    return Math.log2(1 + amount / reference);
+}
 
 function soundDistance(delta, size) {
     return delta - Math.round(delta / size) * size;
@@ -73,7 +78,7 @@ export class WorldAudio {
         this.rangeY = Math.max(4, field.height / (2 * camera.zoom));
         this.x = camera.x + field.width / (2 * camera.zoom);
         this.y = camera.y + field.height / (2 * camera.zoom);
-        this.zoomGain = Math.min(1, Math.sqrt(camera.zoom / 10));
+        this.zoomGain = Math.min(1, (camera.zoom / SOUND_NEAR_ZOOM) ** 0.4);
     }
 
     record(kind, index) {
@@ -124,6 +129,7 @@ export class WorldAudio {
             pans[x] = dx;
         }
 
+        let audibleWeight = 0;
         let energy = 0;
         let organic = 0;
         let radiation = 0;
@@ -139,9 +145,10 @@ export class WorldAudio {
                 const weight = horizontal[x] * vertical;
                 if (weight === 0) continue;
                 const index = y * this.width + x;
-                const e = world.energy[index] >= soil ? Math.min(world.energy[index] / soil - 0.85, 1) * weight : 0;
-                const o = world.organic[index] >= soil ? Math.min(world.organic[index] / soil - 0.85, 1) * weight : 0;
-                const r = Math.min(world.radiation[index] / 1000, 1) * weight;
+                audibleWeight += weight;
+                const e = world.energy[index] >= soil ? soundStrength(world.energy[index], soil) * weight : 0;
+                const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
+                const r = soundStrength(world.radiation[index], 1000) * weight;
                 energy += e;
                 organic += o;
                 radiation += r;
@@ -152,7 +159,8 @@ export class WorldAudio {
         }
 
         const time = this.context.currentTime;
-        const level = weight => (1 - Math.exp(-weight / 6)) * this.zoomGain;
+        const normalization = 6 * Math.max(1, audibleWeight / 32);
+        const level = weight => weight / (weight + normalization) * this.zoomGain;
         this.hum.gain.gain.setTargetAtTime(level(energy) * 0.45, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);

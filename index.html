@@ -151,7 +151,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
             </form>
             <p id="startup">Если игра не запустилась, скачайте этот HTML-файл и откройте его в браузере. Предпросмотр файла может блокировать JavaScript.</p>
             <div class="viewport"><canvas id="field" width="1000" height="640" aria-label="Поле 100 на 64 клетки. Нажмите, чтобы посадить семечко."></canvas></div>
-            <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · WASD или перетаскивание ПКМ — движение по полю</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле · Два пальца — масштаб</span><span id="flow-legend" hidden>Поток в каналах: 🔵 энергия · 🔴 органика</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
+            <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · WASD или перетаскивание ПКМ — движение по полю</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле · Два пальца — масштаб</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
         </section>
         <aside>
             <details class="settings">
@@ -870,6 +870,11 @@ class Simulation {
 
 const SOUND_UPDATE_MS = 110;
 const SOUND_EVENTS_PER_SAMPLE = 64;
+const SOUND_NEAR_ZOOM = 120;
+
+function soundStrength(amount, reference) {
+    return Math.log2(1 + amount / reference);
+}
 
 function soundDistance(delta, size) {
     return delta - Math.round(delta / size) * size;
@@ -943,7 +948,7 @@ class WorldAudio {
         this.rangeY = Math.max(4, field.height / (2 * camera.zoom));
         this.x = camera.x + field.width / (2 * camera.zoom);
         this.y = camera.y + field.height / (2 * camera.zoom);
-        this.zoomGain = Math.min(1, Math.sqrt(camera.zoom / 10));
+        this.zoomGain = Math.min(1, (camera.zoom / SOUND_NEAR_ZOOM) ** 0.4);
     }
 
     record(kind, index) {
@@ -994,6 +999,7 @@ class WorldAudio {
             pans[x] = dx;
         }
 
+        let audibleWeight = 0;
         let energy = 0;
         let organic = 0;
         let radiation = 0;
@@ -1009,9 +1015,10 @@ class WorldAudio {
                 const weight = horizontal[x] * vertical;
                 if (weight === 0) continue;
                 const index = y * this.width + x;
-                const e = world.energy[index] >= soil ? Math.min(world.energy[index] / soil - 0.85, 1) * weight : 0;
-                const o = world.organic[index] >= soil ? Math.min(world.organic[index] / soil - 0.85, 1) * weight : 0;
-                const r = Math.min(world.radiation[index] / 1000, 1) * weight;
+                audibleWeight += weight;
+                const e = world.energy[index] >= soil ? soundStrength(world.energy[index], soil) * weight : 0;
+                const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
+                const r = soundStrength(world.radiation[index], 1000) * weight;
                 energy += e;
                 organic += o;
                 radiation += r;
@@ -1022,7 +1029,8 @@ class WorldAudio {
         }
 
         const time = this.context.currentTime;
-        const level = weight => (1 - Math.exp(-weight / 6)) * this.zoomGain;
+        const normalization = 6 * Math.max(1, audibleWeight / 32);
+        const level = weight => weight / (weight + normalization) * this.zoomGain;
         this.hum.gain.gain.setTargetAtTime(level(energy) * 0.45, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);
@@ -1069,7 +1077,6 @@ const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
-const flowLegend = document.querySelector('#flow-legend');
 const zoomIn = document.querySelector('#zoom-in');
 const touch = matchMedia('(hover: none)').matches;
 const inspectHint = touch ? 'Коснитесь клетки, чтобы увидеть ресурсы' : 'Наведите на клетку, чтобы увидеть ресурсы';
@@ -1096,9 +1103,6 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
-const FLOW_DETAIL_ZOOM = 30;
-const FLOW_ENERGY_COLOR = '#47c4ff';
-const FLOW_ORGANIC_COLOR = '#ff626f';
 const RADIATION_PALE_LIMIT = 1000;
 const RADIATION_TINT_WEIGHT = 2.5;
 const resourceRingColors = [
@@ -1136,7 +1140,6 @@ let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
 let previous = performance.now();
-let flowTime = 0;
 let simulationUpdatedAt = previous;
 let simulationTaskPending = false;
 let lastDraw = 0;
@@ -1335,62 +1338,6 @@ function draw() {
     ));
     screen.fillStyle = pattern;
     screen.fillRect(0, 0, field.width, field.height);
-    if (pixelsPerCell >= FLOW_DETAIL_ZOOM) drawChannelFlow(left, top);
-}
-
-function drawStream(x, y, dx, dy, amount, lane, phaseOffset, color) {
-    const magnitude = Math.abs(amount);
-    if (magnitude < 0.003) return;
-    const density = magnitude >= 40 ? 3 : magnitude >= 8 ? 2 : 1;
-    const phase = flowTime * (0.00105 + Math.min(magnitude, 100) * 0.000008) + phaseOffset;
-    const direction = Math.sign(amount);
-    const length = Math.min(0.13, 5 / camera.zoom);
-    screen.strokeStyle = color;
-    screen.beginPath();
-    for (let i = 0; i < density; i++) {
-        const cycle = (phase + i / density) % 1;
-        const position = 0.16 + 0.68 * (direction > 0 ? cycle : 1 - cycle);
-        const headX = x + dx * position;
-        const headY = y + dy * position;
-        screen.moveTo(headX - dx * direction * length - Math.sign(dy) * lane,
-            headY - dy * direction * length + Math.sign(dx) * lane);
-        screen.lineTo(headX - Math.sign(dy) * lane, headY + Math.sign(dx) * lane);
-    }
-    screen.stroke();
-}
-
-function drawChannelFlow(left, top) {
-    const { width, height, cells, transfers, overloaded } = simulation;
-    const pixels = camera.zoom;
-    const periodX = width * pixels;
-    const periodY = height * pixels;
-    const lane = Math.min(4, pixels * 0.045);
-    screen.save();
-    screen.lineWidth = Math.min(4, pixels * 0.08);
-    screen.lineCap = 'round';
-    for (const { cell, neighbor, energy, organic } of transfers) {
-        if (Math.abs(energy) < 0.003 && Math.abs(organic) < 0.003) continue;
-        const column = cell.index % width;
-        const row = Math.floor(cell.index / width);
-        const x = wrap(left + (column + 0.5) * pixels + pixels, periodX) - pixels;
-        const y = wrap(top + (row + 0.5) * pixels + pixels, periodY) - pixels;
-        if (x > field.width + pixels || y > field.height + pixels) continue;
-        if (cells.get(cell.index) !== cell || cells.get(neighbor.index) !== neighbor
-                || overloaded.has(cell.colony) || overloaded.has(neighbor.colony)) continue;
-
-        const horizontal = neighbor.index % width - column;
-        const vertical = Math.floor(neighbor.index / width) - row;
-        const dx = (Math.abs(horizontal) > 1 ? -Math.sign(horizontal) : horizontal) * pixels;
-        const dy = (Math.abs(vertical) > 1 ? -Math.sign(vertical) : vertical) * pixels;
-        const phase = cell.index * 0.017;
-        for (let copyY = y; copyY <= field.height + pixels; copyY += periodY) {
-            for (let copyX = x; copyX <= field.width + pixels; copyX += periodX) {
-                drawStream(copyX, copyY, dx, dy, energy, -lane, phase, FLOW_ENERGY_COLOR);
-                drawStream(copyX, copyY, dx, dy, organic, lane, phase + 0.35, FLOW_ORGANIC_COLOR);
-            }
-        }
-    }
-    screen.restore();
 }
 
 function drawDetailedWorld() {
@@ -1644,7 +1591,6 @@ function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
         if (!gestureZoomOption.parentNode) zoom.append(gestureZoomOption);
     }
     zoom.value = String(camera.zoom);
-    flowLegend.hidden = camera.zoom < FLOW_DETAIL_ZOOM;
     zoomOut.disabled = camera.zoom === minimum;
     zoomIn.disabled = camera.zoom === maximum;
     const difference = 1 / previousZoom - 1 / camera.zoom;
@@ -1871,7 +1817,6 @@ function frame(now) {
     if (!paused && !document.hidden && !simulationTaskPending) {
         runSimulationSlice(multiplier);
     }
-    if (!paused) flowTime += Math.max(0, now - previous);
     previous = now;
     worldAudio?.update(now, simulation, camera, field);
     if (!paused && now - speedSampleAt >= 750) {
