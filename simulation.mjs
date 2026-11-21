@@ -148,6 +148,7 @@ export class Simulation {
         this.energy = new Float64Array(this.width * this.height);
         this.radiation = new Float64Array(this.energy.length);
         this.neighborCache = new Array(this.energy.length);
+        this.throwSites = new Uint32Array(THROW_OFFSETS.length);
         this.throwColumns = Array.from({ length: width }, (_, x) =>
             Uint16Array.from(THROW_OFFSETS, ([dx]) => (x + dx + width) % width));
         this.throwRows = Array.from({ length: this.height }, (_, y) =>
@@ -365,36 +366,29 @@ export class Simulation {
         if (cell.energy < throwEnergy || cell.organic < organic) return false;
         const columns = this.throwColumns[cell.index % this.width];
         const rows = this.throwRows[Math.floor(cell.index / this.width)];
-        const start = Math.floor(this.random() * THROW_OFFSETS.length);
         const rivals = this.families.size > 1;
         if (!rivals && this.cells.size === this.energy.length) return false;
-        let fallback = -1;
-        let offset = start;
-        for (let i = 0; i < THROW_OFFSETS.length; i++) {
+        let count = 0;
+        for (let offset = 0; offset < THROW_OFFSETS.length; offset++) {
             const index = columns[offset] + rows[offset];
-            if (++offset === THROW_OFFSETS.length) offset = 0;
             const target = this.cells.get(index);
-            if (!target) {
-                if (fallback < 0 && this.isSeedSiteSafe(index)) {
-                    fallback = index;
-                    if (!rivals) break;
-                }
-                continue;
+            if (target && (!rivals || target.colony.family === cell.colony.family)) continue;
+            if (!this.isSeedSiteSafe(index)) continue;
+            if (target) {
+                const radiationAfter = this.radiation[index] + DEATH_RADIATION * (this.parasites.has(index) ? 2 : 1);
+                if (radiationAfter > RADIATION_LETHAL_ABOVE) continue;
             }
-            if (!rivals || target.colony.family === cell.colony.family || !this.isSeedSiteSafe(index)) continue;
-            const radiationAfter = this.radiation[index] + DEATH_RADIATION * (this.parasites.has(index) ? 2 : 1);
-            if (radiationAfter > RADIATION_LETHAL_ABOVE) continue;
-            cell.energy -= THROWN_SEED_COST.energy;
-            cell.organic -= THROWN_SEED_COST.organic;
-            this.impactSeed(index, cell.colony);
-            return true;
+            this.throwSites[count++] = index;
         }
-        if (fallback < 0) return false;
-        const x = fallback % this.width;
-        const y = Math.floor(fallback / this.width);
-        if (!this.seed(x, y, cell.colony, THROWN_SEED_COST)) return false;
+        if (count === 0) return false;
+        const index = this.throwSites[Math.floor(this.random() * count)];
         cell.energy -= THROWN_SEED_COST.energy;
         cell.organic -= THROWN_SEED_COST.organic;
+        if (this.cells.has(index)) {
+            this.impactSeed(index, cell.colony);
+        } else {
+            this.seed(index % this.width, Math.floor(index / this.width), cell.colony, THROWN_SEED_COST);
+        }
         return true;
     }
 
