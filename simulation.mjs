@@ -418,6 +418,7 @@ export class Simulation {
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const index = seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
+            if (type === 'seed') return this.isSeedSiteSafe(candidate);
             if (type !== 'teeth') return true;
             return this.neighbors(candidate).some(adjacent => {
                 const neighbor = this.cells.get(adjacent);
