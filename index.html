@@ -1130,7 +1130,7 @@ class WorldAudio {
         const worldY = soundDistance(Math.floor(index / this.width) + 0.5 - this.y, this.height);
         const dx = (this.cos * worldX - this.sin * worldY) / this.rangeX;
         const dy = (this.sin * worldX + this.cos * worldY) / this.rangeY;
-        const gain = Math.max(0, 1 - dx * dx - dy * dy) * this.zoomGain;
+        const gain = this.zoomGain / (1 + dx * dx + dy * dy);
         if (gain > (this.events[kind]?.gain ?? 0)) {
             this.events[kind] = { gain, pan: Math.max(-1, Math.min(1, dx)) };
         }
@@ -1171,13 +1171,14 @@ class WorldAudio {
         for (let x = 0; x < this.width; x++) {
             const distance = soundDistance(x + 0.5 - this.x, this.width);
             const dx = distance / this.rangeX;
-            horizontal[x] = Math.max(0, 1 - dx * dx);
+            horizontal[x] = 1 / (1 + dx * dx);
             pans[x] = rotated ? distance : dx;
         }
 
         let audibleWeight = 0;
         let energy = 0;
         let energyPeak = 0;
+        let maxEnergy = 0;
         let organic = 0;
         let radiation = 0;
         let energyPan = 0;
@@ -1187,21 +1188,21 @@ class WorldAudio {
         for (let y = 0; y < this.height; y++) {
             const distance = soundDistance(y + 0.5 - this.y, this.height);
             const dy = distance / this.rangeY;
-            const vertical = Math.max(0, 1 - dy * dy);
-            if (!rotated && vertical === 0) continue;
+            const vertical = 1 / (1 + dy * dy);
             for (let x = 0; x < this.width; x++) {
                 let pan = pans[x];
                 let weight = horizontal[x] * vertical;
                 if (rotated) {
                     const screenY = (this.sin * pan + this.cos * distance) / this.rangeY;
                     pan = (this.cos * pan - this.sin * distance) / this.rangeX;
-                    weight = Math.max(0, 1 - pan * pan) * Math.max(0, 1 - screenY * screenY);
+                    weight = 1 / ((1 + pan * pan) * (1 + screenY * screenY));
                 }
-                if (weight === 0) continue;
+                pan = Math.max(-1, Math.min(1, pan));
                 const index = y * this.width + x;
                 audibleWeight += weight;
                 const power = world.energy[index];
-                const e = soundStrength(power, soil) * (power / (power + 60)) * weight;
+                if (power > maxEnergy) maxEnergy = power;
+                const e = power > 0 ? soundStrength(power, soil) * (power / (power + 60)) * weight : 0;
                 const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
                 const r = soundStrength(world.radiation[index], 1000) * weight;
                 energy += e;
@@ -1218,7 +1219,8 @@ class WorldAudio {
         const normalization = 6 * Math.max(1, audibleWeight / 32);
         const level = weight => weight / (weight + normalization) * this.zoomGain;
         const nearbyHum = 0.38 * (energyPeak / (energyPeak + 0.16)) ** 0.85 * this.zoomGain;
-        this.humFrequency.setTargetAtTime(65 + 155 * energyPeak / (energyPeak + 0.5), time, 0.12);
+        const pitchStrength = soundStrength(maxEnergy, soil) * (maxEnergy / (maxEnergy + 60));
+        this.humFrequency.setTargetAtTime(65 + 155 * pitchStrength / (pitchStrength + 0.5), time, 0.12);
         this.hum.gain.gain.setTargetAtTime(Math.max(level(energy), nearbyHum) * 0.52, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);
@@ -1226,7 +1228,7 @@ class WorldAudio {
 
         const radiationLevel = level(radiation);
         this.nextClick = Math.max(time, this.nextClick);
-        while (radiationLevel > 0.002 && this.nextClick < time + SOUND_UPDATE_MS / 1000) {
+        while (radiationLevel > 0 && this.nextClick < time + SOUND_UPDATE_MS / 1000) {
             this.play('geiger', radiationLevel * 0.6, radiationPan / radiation, this.nextClick);
             this.nextClick += (0.65 + this.random() * 0.7) / (2 + 26 * radiationLevel);
         }
