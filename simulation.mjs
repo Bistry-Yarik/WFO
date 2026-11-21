@@ -374,28 +374,28 @@ export class Simulation {
             const target = this.cells.get(index);
             if (target && (!rivals || target.colony.family === cell.colony.family)) continue;
             if (!this.isSeedSiteSafe(index)) continue;
-            if (target) {
-                const radiationAfter = this.radiation[index] + DEATH_RADIATION * (this.parasites.has(index) ? 2 : 1);
-                if (radiationAfter > RADIATION_LETHAL_ABOVE) continue;
-            }
             this.throwSites[count++] = index;
         }
         if (count === 0) return false;
         const index = this.throwSites[Math.floor(this.random() * count)];
-        cell.energy -= THROWN_SEED_COST.energy;
-        cell.organic -= THROWN_SEED_COST.organic;
-        if (this.cells.has(index)) {
-            this.impactSeed(index, cell.colony);
-        } else {
-            this.seed(index % this.width, Math.floor(index / this.width), cell.colony, THROWN_SEED_COST);
-        }
+        this.launchSeedAt(index, cell, THROWN_SEED_COST);
         return true;
     }
 
-    impactSeed(index, colony) {
+    launchSeedAt(index, cell, cost) {
+        cell.energy -= cost.energy;
+        cell.organic -= cost.organic;
+        if (this.cells.has(index)) {
+            this.impactSeed(index, cell.colony, cost);
+        } else {
+            this.seed(index % this.width, Math.floor(index / this.width), cell.colony, cost);
+        }
+    }
+
+    impactSeed(index, colony, cost = THROWN_SEED_COST) {
         const x = index % this.width;
         const y = Math.floor(index / this.width);
-        const cargo = { ...THROWN_SEED_COST };
+        const cargo = { ...cost };
         for (let dy = -1; dy <= 1; dy++) {
             for (let dx = -1; dx <= 1; dx++) {
                 const site = this.wrappedIndex(x + dx, y + dy);
@@ -452,12 +452,15 @@ export class Simulation {
     }
 
     findToothHost(candidates, family) {
+        let fallback = null;
         for (const index of candidates) {
             const target = this.cells.get(index);
-            if (target && target.colony.family !== family
-                    && !this.parasites.has(index) && this.isSeedSiteSafe(index)) return target;
+            if (!target || target.colony.family === family
+                    || this.parasites.has(index) || !this.isSeedSiteSafe(index)) continue;
+            if (target.type === 'channel') return target;
+            fallback ??= target;
         }
-        return null;
+        return fallback;
     }
 
     moveToothOntoEnemy(cell) {
@@ -488,15 +491,23 @@ export class Simulation {
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const biting = Boolean(TOOTH_RESOURCE[type]);
         const host = biting ? this.findToothHost(ordered, cell.colony.family) : null;
-        const index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
-            if (this.cells.has(candidate)) return false;
-            if (type === 'seed') return this.isSeedSiteSafe(candidate);
-            if (!biting) return true;
-            return this.neighbors(candidate).some(adjacent => {
-                const neighbor = this.cells.get(adjacent);
-                return neighbor && neighbor.colony.family !== cell.colony.family;
+        let index;
+        if (type === 'seed') {
+            const candidates = neighbors.filter(candidate => {
+                const target = this.cells.get(candidate);
+                return target?.colony.family !== cell.colony.family && this.isSeedSiteSafe(candidate);
             });
-        }));
+            if (candidates.length) index = candidates[Math.floor(this.random() * candidates.length)];
+        } else {
+            index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
+                if (this.cells.has(candidate)) return false;
+                if (!biting) return true;
+                return this.neighbors(candidate).some(adjacent => {
+                    const neighbor = this.cells.get(adjacent);
+                    return neighbor && neighbor.colony.family !== cell.colony.family;
+                });
+            }));
+        }
         const buildFirst = (preferBuild || host) && index !== undefined
             && cell.energy >= requirements.energy && cell.organic >= requirements.organic;
         if (!buildFirst && this.throwSeed(cell)) {
@@ -510,9 +521,7 @@ export class Simulation {
         if (cell.energy < requirements.energy || cell.organic < requirements.organic) return;
 
         if (type === 'seed') {
-            this.seed(index % this.width, Math.floor(index / this.width), cell.colony);
-            cell.energy -= SEED_COST.energy;
-            cell.organic -= SEED_COST.organic;
+            this.launchSeedAt(index, cell, SEED_COST);
         } else {
             const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
             const child = this.makeCell(index, childType, cell.colony, cost.energy, cost.organic);
