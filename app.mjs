@@ -20,6 +20,7 @@ const fieldSizeForm = document.querySelector('#field-size');
 const fieldWidth = document.querySelector('#field-width');
 const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
+const mapTool = document.querySelector('#map-tool');
 const viewport = document.querySelector('.viewport');
 const effectsEnabled = document.querySelector('#show-effects');
 const soundEnabled = document.querySelector('#sound-enabled');
@@ -514,6 +515,48 @@ function plant(index) {
     updateReadout();
 }
 
+function paintStroke(fromX, fromY, event, tool, visited) {
+    const rect = field.getBoundingClientRect();
+    const inverse = viewMatrix().inverse();
+    const toMap = (x, y) => inverse.transformPoint({
+        x: Math.max(0, Math.min(rect.width - 0.001, x - rect.left)),
+        y: Math.max(0, Math.min(rect.height - 0.001, y - rect.top))
+    });
+    const from = toMap(fromX, fromY);
+    const to = toMap(event.clientX, event.clientY);
+    const x0 = Math.floor(from.x), y0 = Math.floor(from.y);
+    const dx = Math.floor(to.x) - x0, dy = Math.floor(to.y) - y0;
+    const count = Math.max(1, Math.abs(dx), Math.abs(dy));
+    const radius = Number(seedRadius.value);
+    const indices = [];
+    for (let step = 0; step <= count; step++) {
+        const x = x0 + Math.round(dx * step / count);
+        const y = y0 + Math.round(dy * step / count);
+        for (let ry = -radius; ry <= radius; ry++) {
+            for (let rx = -radius; rx <= radius; rx++) {
+                if (rx * rx + ry * ry > radius * radius) continue;
+                const index = wrap(y + ry, simulation.height) * simulation.width + wrap(x + rx, simulation.width);
+                if (visited.has(index)) continue;
+                visited.add(index);
+                indices.push(index);
+            }
+        }
+    }
+    if (indices.length) {
+        simulation.paintWater(indices, tool);
+        hovered = indexAt(event);
+        draw();
+        updateReadout();
+    }
+}
+
+function useMapTool(event) {
+    const index = indexAt(event);
+    if (index < 0) return;
+    if (mapTool.value === 'seed') plant(index);
+    else paintStroke(event.clientX, event.clientY, event, mapTool.value, new Set());
+}
+
 function touchPair() {
     const points = touchPointers.values();
     const first = points.next().value;
@@ -559,8 +602,10 @@ if ('PointerEvent' in window) {
         const rotating = rotationEnabled.checked && event.button === 1 && event.pointerType === 'mouse';
         if (!event.isPrimary || (!canPlant && !rightDrag && !rotating)) return;
         if (rotating) event.preventDefault();
+        const paintTool = canPlant && mapTool.value !== 'seed' ? mapTool.value : null;
         press = { id: event.pointerId, x: event.clientX, y: event.clientY,
-            dragging: rightDrag || rotating, canPlant, rotating };
+            dragging: rightDrag || rotating, canPlant, rotating, paintTool,
+            visited: paintTool ? new Set() : null };
         field.setPointerCapture(event.pointerId);
     });
     field.addEventListener('pointermove', event => {
@@ -583,18 +628,23 @@ if ('PointerEvent' in window) {
         if (event.pointerId !== press?.id) return;
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
-        if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
+        if (!press.dragging && Math.hypot(dx, dy) <= (press.paintTool ? 4 : 10)) return;
         if (press.rotating) {
             if (rotationEnabled.checked) rotateWithMouse(press.x, press.y, event.clientX, event.clientY);
+        } else if (press.paintTool) {
+            paintStroke(press.x, press.y, event, press.paintTool, press.visited);
         } else moveCameraByScreen(-dx, -dy);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
         if (releaseTouch(event) || event.pointerId !== press?.id) return;
+        if (press.paintTool && press.dragging) {
+            paintStroke(press.x, press.y, event, press.paintTool, press.visited);
+        }
         const stationary = press.canPlant && !press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10;
         press = null;
         lastTap = { x: event.clientX, y: event.clientY, time: performance.now() };
-        if (stationary) plant(indexAt(event));
+        if (stationary) useMapTool(event);
     });
     const cancelPointer = event => {
         releaseTouch(event);
@@ -610,7 +660,7 @@ field.addEventListener('click', event => {
     if (touchGesture) return;
     if (lastTap && performance.now() - lastTap.time < 500
             && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 12) return;
-    plant(indexAt(event));
+    useMapTool(event);
 });
 
 const plantButton = document.querySelector('#plant');

@@ -540,6 +540,39 @@ export class Simulation {
         cell.gene++;
     }
 
+    paintWater(indices, tool) {
+        if (tool !== 'erase') {
+            const resource = this[tool];
+            const excess = tool === 'radiation' ? 1200 : Math.ceil(this.limits.soil * 1.2);
+            for (const index of indices) resource[index] = Math.max(resource[index], excess);
+            return;
+        }
+
+        let removed = false;
+        for (const index of indices) {
+            const parasite = this.parasites.get(index);
+            const cell = this.cells.get(index);
+            if (parasite) this.removeCell(parasite);
+            if (cell) this.removeCell(cell);
+            removed ||= Boolean(parasite || cell);
+            this.energy[index] = 0;
+            this.radiation[index] = 0;
+            this.organic[index] = 700;
+        }
+        if (removed) this.pruneColonies();
+    }
+
+    pruneColonies() {
+        const living = new Set();
+        for (const cell of this.cells.values()) living.add(cell.colony.id);
+        for (const cell of this.parasites.values()) living.add(cell.colony.id);
+        this.families.clear();
+        for (const [id, colony] of this.colonies) {
+            if (living.has(id)) this.families.add(colony.family);
+            else this.colonies.delete(id);
+        }
+    }
+
     recycleUnusedCells() {
         this.recycleCollection(this.cells);
         if (this.parasites.size) this.recycleCollection(this.parasites);
@@ -811,15 +844,6 @@ export class Simulation {
         }
         this.removeToxicCells();
         if (tickNumber % RECYCLE_CHECK_TICKS === 0) this.recycleUnusedCells();
-        if (needsColonyCleanup || this.tickCells === null) {
-            const living = new Set();
-            for (const cell of this.cells.values()) living.add(cell.colony.id);
-            for (const cell of this.parasites.values()) living.add(cell.colony.id);
-            this.families.clear();
-            for (const [id, colony] of this.colonies) {
-                if (living.has(id)) this.families.add(colony.family);
-                else this.colonies.delete(id);
-            }
-        }
+        if (needsColonyCleanup || this.tickCells === null) this.pruneColonies();
     }
 }
