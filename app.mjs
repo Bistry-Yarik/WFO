@@ -425,8 +425,9 @@ function updateReadout() {
     if (cell?.type === 'channel') {
         const { genome } = cell.colony;
         const step = cell.gene % genome.length;
-        const { type, direction, seekRadiation } = genome[step];
-        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`
+        const { type, direction, seekRadiation, wormRole } = genome[step];
+        const command = wormRole === 'turn' ? 'Поворот семечком' : `${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`;
+        channelDetails = ` · Ген ${step + 1}/${genome.length}: ${command}`
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell

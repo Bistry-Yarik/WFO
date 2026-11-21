@@ -93,11 +93,10 @@ function packGenome(pack, random) {
     if (pack === 'worm') {
         const heading = Math.floor(random() * DIRECTIONS.length);
         return [
-            { type: 'channel', direction: heading, preferBuild: true, branchStep: 0 },
-            { type: 'adaptive', direction: (heading + 1) % 4, preferBuild: true },
-            { type: 'teeth', direction: (heading + 3) % 4, preferBuild: true },
-            { type: 'blueTeeth', direction: (heading + 1) % 4, preferBuild: true },
-            { type: 'chlorophyll', direction: (heading + 3) % 4 }
+            { type: 'channel', direction: heading, wormRole: 'front' },
+            { type: 'organic', direction: (heading + 3) % 4, wormRole: 'left' },
+            { type: 'energy', direction: (heading + 1) % 4, wormRole: 'right' },
+            { type: 'seed', direction: heading, wormRole: 'turn' }
         ];
     }
     if (pack === 'cleanup') {
@@ -169,11 +168,14 @@ export class Simulation {
         return this.time % CYCLE_LENGTH < DAY_LENGTH;
     }
 
-    seed(x, y, parent = null, cost = SEED_COST, pack = 'standard') {
+    seed(x, y, parent = null, cost = SEED_COST, pack = 'standard', rotation = 0) {
         const index = y * this.width + x;
         if (x < 0 || x >= this.width || y < 0 || y >= this.height || this.cells.has(index)) return false;
         const id = ++this.totalSeeds;
         const genome = parent ? parent.genome.map(command => ({ ...command })) : packGenome(pack, this.random);
+        if (rotation) {
+            for (const command of genome) command.direction = (command.direction + rotation) % DIRECTIONS.length;
+        }
         const seedNeeds = parent ? { ...parent.seedNeeds } : {};
         if (!parent) {
             for (const trait of SEED_REQUIREMENT_TRAITS) {
@@ -336,7 +338,7 @@ export class Simulation {
         this.diffusionBuffers[resource] = ground;
     }
 
-    bite(cell) {
+    bite(cell, onlyTarget = null) {
         const resource = TOOTH_RESOURCE[cell.type];
         const base = BITE_RATE * STEP * productionFactor(cell[resource], this.limits);
         const capacity = base + (resource === 'organic' ? organicBoost(cell, base) : 0);
@@ -344,7 +346,7 @@ export class Simulation {
             cell.lastWorkAge = cell.age;
             return;
         }
-        for (const index of this.neighbors(cell.index)) {
+        for (const index of onlyTarget ? [onlyTarget.index] : this.neighbors(cell.index)) {
             const target = this.cells.get(index);
             if (!target || target.colony.family === cell.colony.family || target[resource] <= 0) continue;
             const amount = Math.min(capacity, target[resource]);
@@ -482,9 +484,81 @@ export class Simulation {
         this.onBirth?.(origin);
     }
 
+    buildGrowthCell(parent, index, type, cost, host = null, branchStep = null) {
+        const child = this.makeCell(index, type, parent.colony, cost.energy, cost.organic);
+        if (type === 'channel') child.gene = branchStep ?? parent.gene + 1;
+        if (host) {
+            child.host = host;
+            this.parasites.set(index, child);
+        } else {
+            this.cells.set(index, child);
+        }
+        this.tickCells = null;
+        this.onBirth?.(index);
+        parent.energy -= cost.energy;
+        parent.organic -= cost.organic;
+        return child;
+    }
+
+    turnWorm(cell, direction) {
+        const { energy, organic } = cell.colony.seedNeeds;
+        if (cell.energy < energy || cell.organic < organic || this.random() >= 0.12) return;
+        const x = cell.index % this.width;
+        const y = Math.floor(cell.index / this.width);
+        const [dx, dy] = DIRECTIONS[direction];
+        const forward = this.cells.get(this.wrappedIndex(x + dx, y + dy));
+        const supported = forward?.type === 'channel' && forward.colony.family === cell.colony.family;
+        const turns = this.random() < 0.5 ? [1, 3] : [3, 1];
+        for (const turn of turns) {
+            const [sx, sy] = DIRECTIONS[(direction + turn) % DIRECTIONS.length];
+            const site = this.wrappedIndex(x + sx + (supported ? dx : 0), y + sy + (supported ? dy : 0));
+            if (this.cells.has(site) || !this.isSeedSiteSafe(site)) continue;
+            this.seed(site % this.width, Math.floor(site / this.width), cell.colony, SEED_COST, 'standard', turn);
+            cell.energy -= SEED_COST.energy;
+            cell.organic -= SEED_COST.organic;
+            return;
+        }
+    }
+
+    growWorm(cell, command) {
+        const { wormRole, type, direction } = command;
+        if (wormRole === 'turn') {
+            this.turnWorm(cell, direction);
+            cell.gene++;
+            return;
+        }
+        const index = this.neighbors(cell.index)[direction];
+        const target = this.cells.get(index);
+        if (target) {
+            if (wormRole === 'front' && target.colony.family !== cell.colony.family
+                    && !this.parasites.has(index) && this.isSeedSiteSafe(index)
+                    && cell.energy >= CELL_COST.energy && cell.organic >= CELL_COST.organic) {
+                const toothType = target.energy > target.organic ? 'blueTeeth' : 'teeth';
+                const tooth = this.buildGrowthCell(cell, index, toothType, CELL_COST, target);
+                this.bite(tooth, target);
+            }
+            cell.gene++;
+            return;
+        }
+
+        const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
+        if (cell.energy < cost.energy || cell.organic < cost.organic) return;
+        let childType = type;
+        if (wormRole === 'right' && (this.radiation[index] >= 150
+                || this.neighbors(index).some(site => this.radiation[site] >= 150))
+                && this.random() < 0.2) childType = 'cleaner';
+        this.buildGrowthCell(cell, index, childType, cost, null, wormRole === 'front' ? 0 : null);
+        cell.gene++;
+    }
+
     grow(cell) {
         if (cell.colony.thirsty) return;
-        const { type, direction, preferBuild, branchStep, seekRadiation } = cell.colony.genome[cell.gene % cell.colony.genome.length];
+        const command = cell.colony.genome[cell.gene % cell.colony.genome.length];
+        if (command.wormRole) {
+            this.growWorm(cell, command);
+            return;
+        }
+        const { type, direction, preferBuild, branchStep, seekRadiation } = command;
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
@@ -524,18 +598,7 @@ export class Simulation {
             this.launchSeedAt(index, cell, SEED_COST);
         } else {
             const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
-            const child = this.makeCell(index, childType, cell.colony, cost.energy, cost.organic);
-            if (type === 'channel') child.gene = branchStep ?? cell.gene + 1;
-            if (host) {
-                child.host = host;
-                this.parasites.set(index, child);
-            } else {
-                this.cells.set(index, child);
-            }
-            this.tickCells = null;
-            this.onBirth?.(index);
-            cell.energy -= cost.energy;
-            cell.organic -= cost.organic;
+            this.buildGrowthCell(cell, index, childType, cost, host, branchStep);
         }
         cell.gene++;
     }
