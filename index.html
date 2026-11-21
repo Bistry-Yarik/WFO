@@ -207,6 +207,10 @@ const GENOME_LENGTH = 9;
 const MUTATION_TYPES = [...TYPES, 'adaptive'];
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const GROWTH_INTERVAL = 1.5;
+const IDLE_RECYCLE_AGE = 30;
+const RECYCLE_CHECK_TICKS = Math.round(1 / STEP);
+const MIN_USEFUL_WORK = 0.01;
+const RECYCLABLE_TYPES = new Set(['organic', 'energy', 'teeth', 'cleaner', 'converter', 'stomach']);
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
@@ -422,7 +426,7 @@ class Simulation {
     }
 
     makeCell(index, type, colony, energy, organic = energy) {
-        return { index, type, colony, energy, organic, age: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
+        return { index, type, colony, energy, organic, age: 0, lastWorkAge: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
     wrappedIndex(x, y) {
@@ -446,6 +450,10 @@ class Simulation {
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
         const base = 50 * STEP * productionFactor(cell[resource], this.limits);
+        if (base === 0) {
+            cell.lastWorkAge = cell.age;
+            return;
+        }
         const bonus = resource === 'organic' ? organicBoost(cell, base) : 0;
         let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
@@ -459,6 +467,7 @@ class Simulation {
                 remaining -= amount;
             }
         }
+        if (base + bonus - remaining >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
         cell.energy -= Math.max(0, bonus - remaining);
     }
 
@@ -482,7 +491,9 @@ class Simulation {
                 remaining -= removed;
             }
         }
-        cell.energy += (budget - remaining) * CLEANUP_ENERGY_PER_RADIATION;
+        const removed = budget - remaining;
+        if (removed >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
+        cell.energy += removed * CLEANUP_ENERGY_PER_RADIATION;
     }
 
     diffuse(resource, duration) {
@@ -511,13 +522,17 @@ class Simulation {
     bite(cell) {
         const base = BITE_RATE * STEP * productionFactor(cell.organic, this.limits);
         const capacity = base + organicBoost(cell, base);
-        if (capacity === 0) return;
+        if (capacity === 0) {
+            cell.lastWorkAge = cell.age;
+            return;
+        }
         for (const index of this.neighbors(cell.index)) {
             const target = this.cells.get(index);
             if (!target || target.colony.family === cell.colony.family || target.organic <= 0) continue;
             const amount = Math.min(capacity, target.organic);
             target.organic -= amount;
             cell.organic += amount;
+            if (amount >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
             cell.energy -= Math.max(0, amount - base);
             break;
         }
@@ -627,6 +642,28 @@ class Simulation {
             cell.organic -= cost.organic;
         }
         cell.gene++;
+    }
+
+    recycleUnusedCells() {
+        for (const cell of this.cells.values()) {
+            if (!RECYCLABLE_TYPES.has(cell.type) || cell.age - cell.lastWorkAge < IDLE_RECYCLE_AGE) continue;
+            const channels = [];
+            for (const index of this.neighbors(cell.index)) {
+                const neighbor = this.cells.get(index);
+                if (neighbor?.type === 'channel' && neighbor.colony.family === cell.colony.family) {
+                    channels.push(neighbor);
+                }
+            }
+            if (channels.length === 0) continue;
+            const energy = cell.energy / channels.length;
+            const organic = cell.organic / channels.length;
+            for (const channel of channels) {
+                channel.energy += energy;
+                channel.organic += organic;
+            }
+            this.cells.delete(cell.index);
+            this.tickCells = null;
+        }
     }
 
     drop(cell, cause, resources) {
@@ -778,7 +815,9 @@ class Simulation {
                 this.drop(cell, 'excess', excess);
                 continue;
             }
-            if (cell.type === 'converter' && cell.energy > cell.organic) {
+            if (cell.type === 'converter' && cell.organic >= this.limits.stop) {
+                cell.lastWorkAge = cell.age;
+            } else if (cell.type === 'converter' && cell.energy > cell.organic) {
                 const difference = cell.energy - cell.organic;
                 const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic, this.limits);
                 const base = Math.min(capacity, difference / 2);
@@ -786,13 +825,17 @@ class Simulation {
                 const bonus = Math.min(organicBoost(cell, capacity), Math.max(0, difference - 2 * base) / 3);
                 cell.energy -= base + 2 * bonus;
                 cell.organic += base + bonus;
-            } else if (cell.type === 'stomach' && !cell.colony.thirsty && cell.organic > cell.energy) {
+                if (base + bonus >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
+            } else if (cell.type === 'stomach' && (cell.colony.thirsty || cell.energy >= this.limits.stop)) {
+                cell.lastWorkAge = cell.age;
+            } else if (cell.type === 'stomach' && cell.organic > cell.energy) {
                 const amount = Math.min(
                     CONVERSION_RATE * STEP * productionFactor(cell.energy, this.limits),
                     (cell.organic - cell.energy) / 2
                 );
                 cell.organic -= amount;
                 cell.energy += amount;
+                if (amount >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
             }
             if (cell.type === 'cleaner') this.cleanRadiation(cell);
             cell.energy = Math.max(0, cell.energy - ENERGY_UPKEEP * STEP);
@@ -808,6 +851,7 @@ class Simulation {
             }
         }
         this.removeToxicCells();
+        if (tickNumber % RECYCLE_CHECK_TICKS === 0) this.recycleUnusedCells();
         if (needsColonyCleanup || this.tickCells === null) {
             const living = new Set();
             for (const cell of this.cells.values()) living.add(cell.colony.id);
