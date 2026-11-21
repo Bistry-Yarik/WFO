@@ -133,6 +133,7 @@ export class Simulation {
         this.width = width;
         this.height = Math.round(width * HEIGHT / WIDTH);
         this.cells = new Map();
+        this.parasites = new Map();
         this.colonies = new Map();
         this.tickCells = null;
         this.tickDaylight = null;
@@ -234,7 +235,7 @@ export class Simulation {
     }
 
     makeCell(index, type, colony, energy, organic = energy) {
-        return { index, type, colony, energy, organic, age: 0, lastWorkAge: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
+        return { index, type, colony, energy, organic, host: null, age: 0, lastWorkAge: 0, growth: 0, gene: 0, flow: 0, flowResources: 0 };
     }
 
     wrappedIndex(x, y) {
@@ -416,7 +417,10 @@ export class Simulation {
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
-        const index = seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
+        const host = type === 'teeth' ? ordered.map(index => this.cells.get(index)).find(target =>
+            target && target.colony.family !== cell.colony.family
+            && !this.parasites.has(target.index) && this.isSeedSiteSafe(target.index)) : null;
+        const index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
             if (this.cells.has(candidate)) return false;
             if (type === 'seed') return this.isSeedSiteSafe(candidate);
             if (type !== 'teeth') return true;
@@ -424,8 +428,8 @@ export class Simulation {
                 const neighbor = this.cells.get(adjacent);
                 return neighbor && neighbor.colony.family !== cell.colony.family;
             });
-        });
-        const buildFirst = preferBuild && index !== undefined
+        }));
+        const buildFirst = (preferBuild || host) && index !== undefined
             && cell.energy >= requirements.energy && cell.organic >= requirements.organic;
         if (!buildFirst && this.throwSeed(cell)) {
             if (type === 'seed') cell.gene++;
@@ -445,7 +449,12 @@ export class Simulation {
             const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
             const child = this.makeCell(index, childType, cell.colony, cost.energy, cost.organic);
             if (type === 'channel') child.gene = branchStep ?? cell.gene + 1;
-            this.cells.set(index, child);
+            if (host) {
+                child.host = host;
+                this.parasites.set(index, child);
+            } else {
+                this.cells.set(index, child);
+            }
             this.tickCells = null;
             this.onBirth?.(index);
             cell.energy -= cost.energy;
@@ -455,7 +464,12 @@ export class Simulation {
     }
 
     recycleUnusedCells() {
-        for (const cell of this.cells.values()) {
+        this.recycleCollection(this.cells);
+        if (this.parasites.size) this.recycleCollection(this.parasites);
+    }
+
+    recycleCollection(collection) {
+        for (const cell of collection.values()) {
             if (!RECYCLABLE_TYPES.has(cell.type) || cell.age - cell.lastWorkAge < IDLE_RECYCLE_AGE) continue;
             const channels = [];
             for (const index of this.neighbors(cell.index)) {
@@ -471,8 +485,22 @@ export class Simulation {
                 channel.energy += energy;
                 channel.organic += organic;
             }
-            this.cells.delete(cell.index);
-            this.tickCells = null;
+            this.removeCell(cell);
+        }
+    }
+
+    removeCell(cell) {
+        this.tickCells = null;
+        if (cell.host) {
+            this.parasites.delete(cell.index);
+            return;
+        }
+        this.cells.delete(cell.index);
+        const parasite = this.parasites.get(cell.index);
+        if (parasite) {
+            this.parasites.delete(cell.index);
+            parasite.host = null;
+            this.cells.set(cell.index, parasite);
         }
     }
 
@@ -480,13 +508,17 @@ export class Simulation {
         this.radiation[cell.index] += DEATH_RADIATION;
         this.energy[cell.index] += cell.energy;
         this.organic[cell.index] += cell.organic;
-        this.cells.delete(cell.index);
-        this.tickCells = null;
+        this.removeCell(cell);
         this.onDeath?.(cell.index, cause, resources);
     }
 
     removeToxicCells() {
-        for (const cell of this.cells.values()) {
+        this.removeToxicFrom(this.cells);
+        if (this.parasites.size) this.removeToxicFrom(this.parasites);
+    }
+
+    removeToxicFrom(collection) {
+        for (const cell of collection.values()) {
             const resources = resourceMask(
                 this.energy[cell.index] >= this.limits.soil && cell.type !== 'energy',
                 this.organic[cell.index] >= this.limits.soil && cell.type !== 'organic'
@@ -496,7 +528,7 @@ export class Simulation {
     }
 
     prepareTick(daylight) {
-        if (this.tickCells?.length === this.cells.size && this.tickDaylight === daylight) return;
+        if (this.tickCells?.length === this.cells.size + this.parasites.size && this.tickDaylight === daylight) return;
         let grid = null;
         let existing;
         if (this.cells.size > this.energy.length / 4) {
@@ -516,6 +548,14 @@ export class Simulation {
                 const neighbor = grid ? grid[index] : this.cells.get(index);
                 if (!neighbor || neighbor.colony.family !== cell.colony.family) continue;
                 this.transfers.push({ cell, neighbor, energy: 0, organic: 0 });
+            }
+        }
+        for (const parasite of this.parasites.values()) {
+            existing.push(parasite);
+            for (const index of this.neighbors(parasite.index)) {
+                const neighbor = this.cells.get(index);
+                if (!neighbor || neighbor.colony.family !== parasite.colony.family) continue;
+                this.transfers.push({ cell: parasite, neighbor, energy: 0, organic: 0 });
             }
         }
     }
@@ -578,12 +618,13 @@ export class Simulation {
         }
 
         for (const cell of existing) {
-            if (cell.type === 'teeth') this.bite(cell);
+            if (cell.type === 'teeth' && !cell.host) this.bite(cell);
         }
 
         // Compute transfers from the same snapshot so no cell spends incoming
         // resources until the following tick.
         const transfers = this.transfers;
+        const parasites = this.parasites.size ? this.parasites : null;
         for (const transfer of transfers) {
             const { cell, neighbor } = transfer;
             if (cell.type !== 'channel' && neighbor.type !== 'channel') {
@@ -591,7 +632,15 @@ export class Simulation {
                 continue;
             }
             const energy = (cell.energy - neighbor.energy) * 0.025;
-            const organic = (cell.organic - neighbor.organic) * 0.025;
+            let sourceOrganic = cell.organic;
+            let targetOrganic = neighbor.organic;
+            if (parasites) {
+                const sourceTrap = !cell.host && parasites.get(cell.index);
+                const targetTrap = !neighbor.host && parasites.get(neighbor.index);
+                if (sourceTrap) sourceOrganic = Math.min(sourceOrganic, sourceTrap.organic);
+                if (targetTrap) targetOrganic = Math.min(targetOrganic, targetTrap.organic);
+            }
+            const organic = (sourceOrganic - targetOrganic) * 0.025;
             const flow = (Math.abs(energy) + Math.abs(organic)) / STEP;
             transfer.energy = energy;
             transfer.organic = organic;
@@ -614,8 +663,16 @@ export class Simulation {
             if (energy === 0 && organic === 0) continue;
             if (overloaded.size && (overloaded.has(cell.colony) || overloaded.has(neighbor.colony))) continue;
             cell.energy -= energy;
-            cell.organic -= organic;
             neighbor.energy += energy;
+            const receiver = organic > 0 ? neighbor : cell;
+            const trap = organic && !receiver.host && parasites?.get(receiver.index);
+            if (trap && !overloaded.has(trap.colony)) {
+                const stolen = Math.min(Math.abs(organic), Math.max(0, this.limits.stop - trap.organic));
+                trap.organic += stolen;
+                if (stolen >= MIN_USEFUL_WORK) trap.lastWorkAge = trap.age;
+                receiver.organic -= stolen;
+            }
+            cell.organic -= organic;
             neighbor.organic += organic;
         }
 
@@ -665,6 +722,7 @@ export class Simulation {
         if (needsColonyCleanup || this.tickCells === null) {
             const living = new Set();
             for (const cell of this.cells.values()) living.add(cell.colony.id);
+            for (const cell of this.parasites.values()) living.add(cell.colony.id);
             for (const id of this.colonies.keys()) {
                 if (!living.has(id)) this.colonies.delete(id);
             }

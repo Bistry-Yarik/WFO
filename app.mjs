@@ -117,8 +117,8 @@ function channelStockColor(cell) {
 
 function drawCell(cell) {
     const { width } = simulation;
-    const x = (cell.index % width + 0.5) * scale;
-    const y = (Math.floor(cell.index / width) + 0.5) * scale;
+    const x = (cell.index % width + (cell.host ? 0.73 : 0.5)) * scale;
+    const y = (Math.floor(cell.index / width) + (cell.host ? 0.3 : 0.5)) * scale;
     let color = '#fff';
     if (familyColors.checked) color = `hsl(${cell.colony.hue} 80% 70%)`;
     else if (cell.type === 'channel') color = `rgb(${channelStockColor(cell).join(' ')})`;
@@ -166,7 +166,7 @@ function drawCell(cell) {
         context.beginPath();
         for (let point = 0; point < sides; point++) {
             const angle = -Math.PI / 2 + point * 2 * Math.PI / sides;
-            const radius = cell.type === 'stomach' && point % 2 ? 2.05 : 4.3;
+            const radius = cell.host ? 2.5 : cell.type === 'stomach' && point % 2 ? 2.05 : 4.3;
             const px = x + Math.cos(angle) * radius;
             const py = y + Math.sin(angle) * radius;
             if (point === 0) context.moveTo(px, py);
@@ -249,6 +249,7 @@ function drawOverview() {
         }
         pixels.set(color, index * 4);
     }
+    for (const index of simulation.parasites.keys()) pixels.set(overviewColors.teeth, index * 4);
     terrainContext.putImageData(terrainPixels, 0, 0);
     terrainContext.save();
     terrainContext.scale(1 / scale, 1 / scale);
@@ -300,6 +301,7 @@ function drawDetailedWorld() {
     for (const cell of simulation.cells.values()) {
         if (cell.type !== 'channel') drawCell(cell);
     }
+    for (const parasite of simulation.parasites.values()) drawCell(parasite);
     drawEffects(context);
     return worldCanvas;
 }
@@ -322,7 +324,7 @@ function drawEffects(target) {
 
 const statRows = [
     ['Колонии', () => simulation.colonies.size],
-    ['Живые клетки', () => simulation.cells.size],
+    ['Живые клетки', () => simulation.cells.size + simulation.parasites.size],
     ['Семечки за игру', () => simulation.totalSeeds],
     ['Мутации', () => simulation.mutations],
     ['Перегрузки', () => simulation.overloads]
@@ -348,6 +350,8 @@ function updateReadout() {
     }
     const cell = simulation.cells.get(hovered);
     const soil = `Вода ⚡ ${Math.floor(simulation.energy[hovered])} / орг. ${Math.floor(simulation.organic[hovered])} / рад. ${Math.floor(simulation.radiation[hovered])}`;
+    const parasite = simulation.parasites.get(hovered);
+    const parasiteDetails = parasite ? ` · Зубы-паразит · орг. ${Math.floor(parasite.organic)}` : '';
     const needs = cell?.colony.seedNeeds;
     const thirst = cell?.colony.thirsty ? ' · Жажда органики' : '';
     let channelDetails = '';
@@ -359,7 +363,7 @@ function updateReadout() {
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
-        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${thirst}${channelDetails} · ${soil}`
+        ? `${names[cell.type]} · ⚡ ${Math.floor(cell.energy)} / орг. ${Math.floor(cell.organic)}${thirst}${channelDetails}${parasiteDetails} · ${soil}`
         : soil;
 }
 
