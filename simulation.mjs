@@ -138,6 +138,8 @@ export class Simulation {
         this.cells = new Map();
         this.parasites = new Map();
         this.colonies = new Map();
+        this.families = new Set();
+        this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
         this.transfers = [];
@@ -212,6 +214,7 @@ export class Simulation {
             reserveCells: 0
         };
         this.colonies.set(id, colony);
+        this.families.add(colony.family);
         const seed = parent
             ? this.makeCell(index, 'seed', colony, cost.energy, cost.organic)
             : this.makeCell(index, 'seed', colony, 1350);
@@ -363,20 +366,59 @@ export class Simulation {
         const columns = this.throwColumns[cell.index % this.width];
         const rows = this.throwRows[Math.floor(cell.index / this.width)];
         const start = Math.floor(this.random() * THROW_OFFSETS.length);
-        if (this.cells.size === this.energy.length) return false;
+        const rivals = this.families.size > 1;
+        if (!rivals && this.cells.size === this.energy.length) return false;
+        let fallback = -1;
         let offset = start;
         for (let i = 0; i < THROW_OFFSETS.length; i++) {
             const index = columns[offset] + rows[offset];
             if (++offset === THROW_OFFSETS.length) offset = 0;
-            if (this.cells.has(index) || !this.isSeedSiteSafe(index)) continue;
-            const nx = index % this.width;
-            const ny = Math.floor(index / this.width);
-            if (!this.seed(nx, ny, cell.colony, THROWN_SEED_COST)) continue;
+            const target = this.cells.get(index);
+            if (!target) {
+                if (fallback < 0 && this.isSeedSiteSafe(index)) {
+                    fallback = index;
+                    if (!rivals) break;
+                }
+                continue;
+            }
+            if (!rivals || target.colony.family === cell.colony.family || !this.isSeedSiteSafe(index)) continue;
+            const radiationAfter = this.radiation[index] + DEATH_RADIATION * (this.parasites.has(index) ? 2 : 1);
+            if (radiationAfter > RADIATION_LETHAL_ABOVE) continue;
             cell.energy -= THROWN_SEED_COST.energy;
             cell.organic -= THROWN_SEED_COST.organic;
+            this.impactSeed(index, cell.colony);
             return true;
         }
-        return false;
+        if (fallback < 0) return false;
+        const x = fallback % this.width;
+        const y = Math.floor(fallback / this.width);
+        if (!this.seed(x, y, cell.colony, THROWN_SEED_COST)) return false;
+        cell.energy -= THROWN_SEED_COST.energy;
+        cell.organic -= THROWN_SEED_COST.organic;
+        return true;
+    }
+
+    impactSeed(index, colony) {
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        const cargo = { ...THROWN_SEED_COST };
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const site = this.wrappedIndex(x + dx, y + dy);
+                const parasite = this.parasites.get(site);
+                const cell = this.cells.get(site);
+                for (const victim of [parasite, cell]) {
+                    if (!victim) continue;
+                    cargo.energy += victim.energy;
+                    cargo.organic += victim.organic;
+                    this.radiation[site] += DEATH_RADIATION;
+                    this.removeCell(victim);
+                }
+            }
+        }
+        this.impactThisTick = true;
+        this.seed(x, y, colony, cargo);
+        this.onDeath?.(index, 'impact', 0);
     }
 
     adaptiveCollector(index) {
@@ -602,6 +644,7 @@ export class Simulation {
     }
 
     tick() {
+        this.impactThisTick = false;
         const tickNumber = Math.round(this.time / STEP) + 1;
         this.time = tickNumber * STEP;
         this.removeToxicCells();
@@ -614,6 +657,7 @@ export class Simulation {
         this.removeToxicCells();
         if (this.cells.size === 0) {
             this.colonies.clear();
+            this.families.clear();
             this.transfers.length = 0;
             return;
         }
@@ -721,6 +765,7 @@ export class Simulation {
         }
 
         for (const cell of existing) {
+            if (this.impactThisTick && (cell.host ? this.parasites : this.cells).get(cell.index) !== cell) continue;
             const excess = overloaded.size && overloaded.get(cell.colony);
             if (excess) {
                 this.drop(cell, 'excess', excess);
@@ -767,8 +812,10 @@ export class Simulation {
             const living = new Set();
             for (const cell of this.cells.values()) living.add(cell.colony.id);
             for (const cell of this.parasites.values()) living.add(cell.colony.id);
-            for (const id of this.colonies.keys()) {
-                if (!living.has(id)) this.colonies.delete(id);
+            this.families.clear();
+            for (const [id, colony] of this.colonies) {
+                if (living.has(id)) this.families.add(colony.family);
+                else this.colonies.delete(id);
             }
         }
     }

@@ -29,6 +29,7 @@ const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
 const resetAngle = document.querySelector('#reset-angle');
+const rotationEnabled = document.querySelector('#enable-rotation');
 const zoomIn = document.querySelector('#zoom-in');
 const touch = matchMedia('(hover: none)').matches;
 const inspectHint = touch ? 'Коснитесь клетки, чтобы увидеть ресурсы' : 'Наведите на клетку, чтобы увидеть ресурсы';
@@ -186,7 +187,10 @@ function drawCell(cell, target = context) {
 function recordDeath(index, cause, resources) {
     worldAudio?.record('death', index);
     if (!effectsEnabled.checked) return;
-    if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
+    if (cause !== 'impact' && (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index))) return;
+    if (deathEffects.size >= MAX_DEATH_EFFECTS && !deathEffects.has(index)) {
+        deathEffects.delete(deathEffects.keys().next().value);
+    }
     deathEffects.set(index, { cause, resources, start: performance.now() });
 }
 
@@ -216,9 +220,10 @@ function drawDeathEffects(now, target = context) {
 
         const x = (index % width + 0.5) * scale;
         const y = (Math.floor(index / width) + 0.5) * scale;
-        const expansion = effect.cause === 'excess' ? progress : 1 - progress;
-        const radius = 2 + 16 * expansion;
-        const segments = resourceRingColors.filter(([resource]) => effect.resources & resource);
+        const impact = effect.cause === 'impact';
+        const expansion = effect.cause === 'deficit' ? 1 - progress : progress;
+        const radius = 2 + (impact ? 20 : 16) * expansion;
+        const segments = impact ? [[0, '#fff']] : resourceRingColors.filter(([resource]) => effect.resources & resource);
         const sweep = 2 * Math.PI / segments.length;
         target.globalAlpha = 1 - progress;
         for (let i = 0; i < segments.length; i++) {
@@ -466,6 +471,9 @@ function setAngle(angle, anchorX = field.width / 2, anchorY = field.height / 2) 
 }
 
 resetAngle.addEventListener('click', () => setAngle(0));
+rotationEnabled.addEventListener('change', () => {
+    if (!rotationEnabled.checked) setAngle(0);
+});
 
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
@@ -532,7 +540,7 @@ if ('PointerEvent' in window) {
         }
         const canPlant = event.button === 0;
         const rightDrag = event.button === 2 && event.pointerType === 'mouse';
-        const rotating = event.button === 1 && event.pointerType === 'mouse';
+        const rotating = rotationEnabled.checked && event.button === 1 && event.pointerType === 'mouse';
         if (!event.isPrimary || (!canPlant && !rightDrag && !rotating)) return;
         if (rotating) event.preventDefault();
         press = { id: event.pointerId, x: event.clientX, y: event.clientY,
@@ -546,7 +554,9 @@ if ('PointerEvent' in window) {
                 const pair = touchPair();
                 const rect = field.getBoundingClientRect();
                 setZoom(pinch.zoom * pair.distance / pinch.distance, pinch.x - rect.left, pinch.y - rect.top);
-                setAngle(camera.angle + pair.angle - pinch.angle, pinch.x - rect.left, pinch.y - rect.top);
+                if (rotationEnabled.checked) {
+                    setAngle(camera.angle + pair.angle - pinch.angle, pinch.x - rect.left, pinch.y - rect.top);
+                }
                 moveCameraByScreen(pinch.x - pair.x, pinch.y - pair.y);
                 pinch.angle = pair.angle;
                 pinch.x = pair.x;
@@ -558,8 +568,9 @@ if ('PointerEvent' in window) {
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
-        if (press.rotating) setAngle(camera.angle + dx * 0.012);
-        else moveCameraByScreen(-dx, -dy);
+        if (press.rotating) {
+            if (rotationEnabled.checked) setAngle(camera.angle + dx * 0.012);
+        } else moveCameraByScreen(-dx, -dy);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
