@@ -149,6 +149,7 @@ export class WorldAudio {
         let maxEnergy = 0;
         let organic = 0;
         let radiation = 0;
+        let radiationPeak = 0;
         let energyPan = 0;
         let organicPan = 0;
         let radiationPan = 0;
@@ -171,7 +172,9 @@ export class WorldAudio {
                 if (power > maxEnergy) maxEnergy = power;
                 const e = power > 0 ? soundStrength(power, soil) * (power / (power + 60)) * weight : 0;
                 const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
-                const r = soundStrength(world.radiation[index], 1000) * weight;
+                const dose = world.radiation[index];
+                const r = soundStrength(dose, 1000) * weight;
+                radiationPeak = Math.max(radiationPeak, dose / (dose + 2000) * weight);
                 energy += e;
                 if (e > energyPeak) energyPeak = e;
                 organic += o;
@@ -194,9 +197,10 @@ export class WorldAudio {
         this.sizzle.pan?.setTargetAtTime(organic ? organicPan / organic : 0, time, 0.07);
 
         const radiationLevel = level(radiation);
+        const clickVolume = 1.2 * (radiationLevel + radiationPeak * this.zoomGain);
         this.nextClick = Math.max(time, this.nextClick);
         while (radiationLevel > 0 && this.nextClick < time + SOUND_UPDATE_MS / 1000) {
-            this.play('geiger', radiationLevel * 1.2, radiationPan / radiation, this.nextClick);
+            this.play('geiger', clickVolume, radiationPan / radiation, this.nextClick);
             this.nextClick += (0.65 + this.random() * 0.7) / (2 + 26 * radiationLevel);
         }
         for (const [kind, event] of Object.entries(this.events)) {
