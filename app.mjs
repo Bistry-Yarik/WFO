@@ -28,6 +28,7 @@ const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
 const zoomOut = document.querySelector('#zoom-out');
+const resetAngle = document.querySelector('#reset-angle');
 const zoomIn = document.querySelector('#zoom-in');
 const touch = matchMedia('(hover: none)').matches;
 const inspectHint = touch ? 'Коснитесь клетки, чтобы увидеть ресурсы' : 'Наведите на клетку, чтобы увидеть ресурсы';
@@ -40,7 +41,7 @@ const limitStatus = document.querySelector('#limit-status');
 const soilLimitLabel = document.querySelector('#soil-limit-label');
 const settingKeys = Object.keys(DEFAULT_LIMITS);
 const cameraKeys = new Set();
-const camera = { x: 0, y: 0, zoom: 1 };
+const camera = { x: 0, y: 0, zoom: 1, angle: 0 };
 const cameraBindings = { KeyW: [0, -1], KeyA: [-1, 0], KeyS: [0, 1], KeyD: [1, 0] };
 const SIMULATION_SLICE_MS = 8;
 const FAST_SIMULATION_SLICE_MS = 16;
@@ -290,28 +291,27 @@ function draw() {
     } else {
         tile = useOverview ? drawOverview() : drawDetailedWorld();
     }
-    const left = -Math.round(camera.x * pixelsPerCell);
-    const top = -Math.round(camera.y * pixelsPerCell);
+    const matrix = viewMatrix();
     screen.imageSmoothingEnabled = false;
     const pattern = screen.createPattern(tile, 'repeat');
-    pattern.setTransform(new DOMMatrix().translate(left, top).scale(
-        simulation.width * pixelsPerCell / tile.width,
-        simulation.height * pixelsPerCell / tile.height
-    ));
+    pattern.setTransform(matrix.scale(simulation.width / tile.width, simulation.height / tile.height));
     screen.fillStyle = pattern;
     screen.fillRect(0, 0, field.width, field.height);
-    if (vectorDetail) drawVisibleCells(left, top, pixelsPerCell);
+    if (vectorDetail) drawVisibleCells(matrix);
 }
 
-function drawVisibleCells(left, top, pixels) {
+function drawVisibleCells(matrix) {
     const { width, height, cells, parasites } = simulation;
     const channels = [];
     const otherCells = [];
     const attached = [];
-    const startX = Math.floor(-left / pixels) - 1;
-    const endX = Math.ceil((field.width - left) / pixels) + 1;
-    const startY = Math.floor(-top / pixels) - 1;
-    const endY = Math.ceil((field.height - top) / pixels) + 1;
+    const inverse = matrix.inverse();
+    const corners = [[0, 0], [field.width, 0], [0, field.height], [field.width, field.height]]
+        .map(([x, y]) => inverse.transformPoint({ x, y }));
+    const startX = Math.floor(Math.min(...corners.map(point => point.x))) - 1;
+    const endX = Math.ceil(Math.max(...corners.map(point => point.x))) + 1;
+    const startY = Math.floor(Math.min(...corners.map(point => point.y))) - 1;
+    const endY = Math.ceil(Math.max(...corners.map(point => point.y))) + 1;
     for (let y = startY; y < endY; y++) {
         const row = wrap(y, height);
         for (let x = startX; x < endX; x++) {
@@ -319,8 +319,8 @@ function drawVisibleCells(left, top, pixels) {
             const index = row * width + column;
             const cell = cells.get(index);
             if (!cell) continue;
-            const offsetX = left + (x - column) * pixels;
-            const offsetY = top + (y - row) * pixels;
+            const offsetX = x - column;
+            const offsetY = y - row;
             const layer = cell.type === 'channel' ? channels : otherCells;
             layer.push({ cell, offsetX, offsetY });
             const parasite = parasites.get(index);
@@ -329,26 +329,22 @@ function drawVisibleCells(left, top, pixels) {
     }
 
     screen.save();
-    const ratio = pixels / scale;
+    const { a, b, c, d, e, f } = matrix;
     for (const layer of [channels, otherCells, attached]) {
         for (const { cell, offsetX, offsetY } of layer) {
-            screen.setTransform(ratio, 0, 0, ratio, offsetX, offsetY);
+            screen.setTransform(a / scale, b / scale, c / scale, d / scale,
+                e + a * offsetX + c * offsetY, f + b * offsetX + d * offsetY);
             drawCell(cell, screen);
         }
     }
     if (effectsEnabled.checked && (deathEffects.size || planted >= 0)) {
-        const tileWidth = width * pixels;
-        const tileHeight = height * pixels;
-        const firstX = -wrap(-left, tileWidth);
-        const firstY = -wrap(-top, tileHeight);
-        screen.resetTransform();
-        for (let y = firstY; y < field.height; y += tileHeight) {
-            for (let x = firstX; x < field.width; x += tileWidth) {
+        for (let y = Math.floor(startY / height) * height; y < endY; y += height) {
+            for (let x = Math.floor(startX / width) * width; x < endX; x += width) {
                 screen.save();
+                screen.setTransform(matrix.translate(x, y).scale(1 / scale));
                 screen.beginPath();
-                screen.rect(x, y, tileWidth, tileHeight);
+                screen.rect(0, 0, width * scale, height * scale);
                 screen.clip();
-                screen.setTransform(ratio, 0, 0, ratio, x, y);
                 drawEffects(screen);
                 screen.restore();
             }
@@ -441,15 +437,44 @@ function moveCamera(dx, dy) {
     camera.y = wrap(camera.y + dy, simulation.height);
 }
 
+function viewMatrix() {
+    if (camera.angle === 0) {
+        return new DOMMatrix([camera.zoom, 0, 0, camera.zoom,
+            -Math.round(camera.x * camera.zoom), -Math.round(camera.y * camera.zoom)]);
+    }
+    return new DOMMatrix().rotate(camera.angle * 180 / Math.PI).scale(camera.zoom)
+        .translate(-camera.x, -camera.y);
+}
+
+function cameraOffset(x, y) {
+    const cos = Math.cos(camera.angle);
+    const sin = Math.sin(camera.angle);
+    return { x: (cos * x + sin * y) / camera.zoom, y: (-sin * x + cos * y) / camera.zoom };
+}
+
+function moveCameraByScreen(x, y) {
+    const offset = cameraOffset(x, y);
+    moveCamera(offset.x, offset.y);
+}
+
+function setAngle(angle, anchorX = field.width / 2, anchorY = field.height / 2) {
+    const before = cameraOffset(anchorX, anchorY);
+    camera.angle = wrap(angle + Math.PI, 2 * Math.PI) - Math.PI;
+    const after = cameraOffset(anchorX, anchorY);
+    moveCamera(before.x - after.x, before.y - after.y);
+    resetAngle.disabled = camera.angle === 0;
+}
+
+resetAngle.addEventListener('click', () => setAngle(0));
+
 function indexAt(event) {
     const rect = field.getBoundingClientRect();
-    const pixelsPerCell = camera.zoom;
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
     if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return -1;
-    const x = Math.floor((px + Math.round(camera.x * pixelsPerCell)) / pixelsPerCell);
-    const y = Math.floor((py + Math.round(camera.y * pixelsPerCell)) / pixelsPerCell);
-    return wrap(y, simulation.height) * simulation.width + wrap(x, simulation.width);
+    const position = viewMatrix().inverse().transformPoint({ x: px, y: py });
+    return wrap(Math.floor(position.y), simulation.height) * simulation.width
+        + wrap(Math.floor(position.x), simulation.width);
 }
 
 function plant(index) {
@@ -472,7 +497,8 @@ function touchPair() {
     return {
         x: (first.x + second.x) / 2,
         y: (first.y + second.y) / 2,
-        distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y))
+        distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)),
+        angle: Math.atan2(second.y - first.y, second.x - first.x)
     };
 }
 
@@ -506,8 +532,11 @@ if ('PointerEvent' in window) {
         }
         const canPlant = event.button === 0;
         const rightDrag = event.button === 2 && event.pointerType === 'mouse';
-        if (!event.isPrimary || (!canPlant && !rightDrag)) return;
-        press = { id: event.pointerId, x: event.clientX, y: event.clientY, dragging: rightDrag, canPlant };
+        const rotating = event.button === 1 && event.pointerType === 'mouse';
+        if (!event.isPrimary || (!canPlant && !rightDrag && !rotating)) return;
+        if (rotating) event.preventDefault();
+        press = { id: event.pointerId, x: event.clientX, y: event.clientY,
+            dragging: rightDrag || rotating, canPlant, rotating };
         field.setPointerCapture(event.pointerId);
     });
     field.addEventListener('pointermove', event => {
@@ -517,7 +546,9 @@ if ('PointerEvent' in window) {
                 const pair = touchPair();
                 const rect = field.getBoundingClientRect();
                 setZoom(pinch.zoom * pair.distance / pinch.distance, pinch.x - rect.left, pinch.y - rect.top);
-                moveCamera((pinch.x - pair.x) / camera.zoom, (pinch.y - pair.y) / camera.zoom);
+                setAngle(camera.angle + pair.angle - pinch.angle, pinch.x - rect.left, pinch.y - rect.top);
+                moveCameraByScreen(pinch.x - pair.x, pinch.y - pair.y);
+                pinch.angle = pair.angle;
                 pinch.x = pair.x;
                 pinch.y = pair.y;
                 return;
@@ -527,7 +558,8 @@ if ('PointerEvent' in window) {
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= 10) return;
-        moveCamera(-dx / camera.zoom, -dy / camera.zoom);
+        if (press.rotating) setAngle(camera.angle + dx * 0.012);
+        else moveCameraByScreen(-dx, -dy);
         Object.assign(press, { x: event.clientX, y: event.clientY, dragging: true });
     });
     field.addEventListener('pointerup', event => {
@@ -546,6 +578,7 @@ if ('PointerEvent' in window) {
 }
 
 field.addEventListener('contextmenu', event => event.preventDefault());
+field.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
 field.addEventListener('click', event => {
     if (touchGesture) return;
     if (lastTap && performance.now() - lastTap.time < 500
@@ -592,14 +625,14 @@ function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
     const height = Math.max(1, viewport.clientHeight);
     if (field.width === width && field.height === height) return;
-    moveCamera((field.width - width) / (2 * camera.zoom), (field.height - height) / (2 * camera.zoom));
+    moveCameraByScreen((field.width - width) / 2, (field.height - height) / 2);
     field.width = width;
     field.height = height;
     screen.imageSmoothingEnabled = false;
 }
 
 function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
-    const previousZoom = camera.zoom;
+    const before = cameraOffset(anchorX, anchorY);
     const minimum = zoomLevels[0];
     const maximum = zoomLevels[zoomLevels.length - 1];
     camera.zoom = Math.max(minimum, Math.min(maximum, Math.round(value * 100) / 100));
@@ -613,8 +646,8 @@ function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
     zoom.value = String(camera.zoom);
     zoomOut.disabled = camera.zoom === minimum;
     zoomIn.disabled = camera.zoom === maximum;
-    const difference = 1 / previousZoom - 1 / camera.zoom;
-    moveCamera(anchorX * difference, anchorY * difference);
+    const after = cameraOffset(anchorX, anchorY);
+    moveCamera(before.x - after.x, before.y - after.y);
 }
 
 zoom.addEventListener('change', () => setZoom(Number(zoom.value)));
@@ -830,8 +863,8 @@ function frame(now) {
     const delta = Math.min((now - previous) / 1000, 0.1);
     for (const key of cameraKeys) {
         const [dx, dy] = cameraBindings[key];
-        const distance = delta * 420 / camera.zoom;
-        moveCamera(dx * distance, dy * distance);
+        const distance = delta * 420;
+        moveCameraByScreen(dx * distance, dy * distance);
     }
     const multiplier = Number(speed.value);
     if (!paused && !document.hidden && !simulationTaskPending) {

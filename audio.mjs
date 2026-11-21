@@ -76,16 +76,22 @@ export class WorldAudio {
         this.height = world.height;
         this.rangeX = Math.max(4, field.width / (2 * camera.zoom));
         this.rangeY = Math.max(4, field.height / (2 * camera.zoom));
-        this.x = camera.x + field.width / (2 * camera.zoom);
-        this.y = camera.y + field.height / (2 * camera.zoom);
+        this.cos = Math.cos(camera.angle ?? 0);
+        this.sin = Math.sin(camera.angle ?? 0);
+        const centerX = field.width / (2 * camera.zoom);
+        const centerY = field.height / (2 * camera.zoom);
+        this.x = camera.x + this.cos * centerX + this.sin * centerY;
+        this.y = camera.y - this.sin * centerX + this.cos * centerY;
         this.zoomGain = Math.min(1, (camera.zoom / SOUND_NEAR_ZOOM) ** 0.4);
     }
 
     record(kind, index) {
         if (!this.width || this.eventCount >= SOUND_EVENTS_PER_SAMPLE || this.context.state !== 'running') return;
         this.eventCount++;
-        const dx = soundDistance(index % this.width + 0.5 - this.x, this.width) / this.rangeX;
-        const dy = soundDistance(Math.floor(index / this.width) + 0.5 - this.y, this.height) / this.rangeY;
+        const worldX = soundDistance(index % this.width + 0.5 - this.x, this.width);
+        const worldY = soundDistance(Math.floor(index / this.width) + 0.5 - this.y, this.height);
+        const dx = (this.cos * worldX - this.sin * worldY) / this.rangeX;
+        const dy = (this.sin * worldX + this.cos * worldY) / this.rangeY;
         const gain = Math.max(0, 1 - dx * dx - dy * dy) * this.zoomGain;
         if (gain > (this.events[kind]?.gain ?? 0)) {
             this.events[kind] = { gain, pan: Math.max(-1, Math.min(1, dx)) };
@@ -121,12 +127,14 @@ export class WorldAudio {
         if (this.context.state !== 'running' || now - this.lastUpdate < SOUND_UPDATE_MS) return;
         this.lastUpdate = now;
         this.setListener(world, camera, field);
+        const rotated = this.sin !== 0;
         const horizontal = new Float64Array(this.width);
         const pans = new Float64Array(this.width);
         for (let x = 0; x < this.width; x++) {
-            const dx = soundDistance(x + 0.5 - this.x, this.width) / this.rangeX;
+            const distance = soundDistance(x + 0.5 - this.x, this.width);
+            const dx = distance / this.rangeX;
             horizontal[x] = Math.max(0, 1 - dx * dx);
-            pans[x] = dx;
+            pans[x] = rotated ? distance : dx;
         }
 
         let audibleWeight = 0;
@@ -138,11 +146,18 @@ export class WorldAudio {
         let radiationPan = 0;
         const { soil } = world.limits;
         for (let y = 0; y < this.height; y++) {
-            const dy = soundDistance(y + 0.5 - this.y, this.height) / this.rangeY;
+            const distance = soundDistance(y + 0.5 - this.y, this.height);
+            const dy = distance / this.rangeY;
             const vertical = Math.max(0, 1 - dy * dy);
-            if (vertical === 0) continue;
+            if (!rotated && vertical === 0) continue;
             for (let x = 0; x < this.width; x++) {
-                const weight = horizontal[x] * vertical;
+                let pan = pans[x];
+                let weight = horizontal[x] * vertical;
+                if (rotated) {
+                    const screenY = (this.sin * pan + this.cos * distance) / this.rangeY;
+                    pan = (this.cos * pan - this.sin * distance) / this.rangeX;
+                    weight = Math.max(0, 1 - pan * pan) * Math.max(0, 1 - screenY * screenY);
+                }
                 if (weight === 0) continue;
                 const index = y * this.width + x;
                 audibleWeight += weight;
@@ -152,9 +167,9 @@ export class WorldAudio {
                 energy += e;
                 organic += o;
                 radiation += r;
-                energyPan += e * pans[x];
-                organicPan += o * pans[x];
-                radiationPan += r * pans[x];
+                energyPan += e * pan;
+                organicPan += o * pan;
+                radiationPan += r * pan;
             }
         }
 
