@@ -26,7 +26,13 @@ h2 { font-size: 15px; }
 .toolbar, footer, .controls, .phase { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .toolbar, footer { padding: 12px; justify-content: space-between; }
 .phase time, footer, label { color: var(--muted); font-size: 13px; }
-footer { font-size: 11px; }
+footer {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    white-space: nowrap;
+    font-size: 11px;
+}
+footer > span { flex: 0 0 auto; }
 #phase { font-weight: 650; color: #a4ecc0; }
 button, select { font: inherit; color: inherit; background: #23352c; border: 1px solid #415a4d; border-radius: 6px; padding: 5px 8px; cursor: pointer; }
 .zoom-controls { display: inline-flex; align-items: center; gap: 4px; }
@@ -156,7 +162,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
             </form>
             <p id="startup">Если игра не запустилась, скачайте этот HTML-файл и откройте его в браузере. Предпросмотр файла может блокировать JavaScript.</p>
             <div class="viewport"><canvas id="field" width="1000" height="640" aria-label="Поле 100 на 64 клетки. Нажмите, чтобы посадить семечко."></canvas></div>
-            <footer><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · Зажатое колёсико — поворот вокруг центра · WASD или перетаскивание ПКМ — движение по полю</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле · Два пальца — масштаб и поворот</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
+            <footer tabindex="0"><span class="desktop-hint">ЛКМ — посадить семечко · Колёсико — масштаб · Зажатое колёсико — поворот вокруг центра · WASD или перетаскивание ПКМ — движение по полю</span><span class="touch-hint">Касание — посадить · Смахивание — переместить поле · Два пальца — масштаб и поворот</span><span id="inspect">Наведите на клетку, чтобы увидеть ресурсы</span></footer>
         </section>
         <aside>
             <details class="settings">
