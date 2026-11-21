@@ -25,8 +25,11 @@ export class WorldAudio {
         for (let i = 0; i < samples.length; i++) samples[i] = this.random() * 2 - 1;
 
         const hum = context.createOscillator();
-        hum.type = 'triangle';
-        hum.frequency.value = 60;
+        hum.frequency.value = 120;
+        hum.setPeriodicWave(context.createPeriodicWave(
+            new Float32Array([0, 0, 0, 0, 0]),
+            new Float32Array([0, 0.28, 0.75, 0.4, 0.16])
+        ));
         this.hum = this.track(hum);
         hum.start();
 
@@ -139,6 +142,7 @@ export class WorldAudio {
 
         let audibleWeight = 0;
         let energy = 0;
+        let energyPeak = 0;
         let organic = 0;
         let radiation = 0;
         let energyPan = 0;
@@ -165,6 +169,7 @@ export class WorldAudio {
                 const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
                 const r = soundStrength(world.radiation[index], 1000) * weight;
                 energy += e;
+                if (e > energyPeak) energyPeak = e;
                 organic += o;
                 radiation += r;
                 energyPan += e * pan;
@@ -176,7 +181,8 @@ export class WorldAudio {
         const time = this.context.currentTime;
         const normalization = 6 * Math.max(1, audibleWeight / 32);
         const level = weight => weight / (weight + normalization) * this.zoomGain;
-        this.hum.gain.gain.setTargetAtTime(level(energy) * 0.52, time, 0.07);
+        const nearbyHum = 0.38 * Math.sqrt(energyPeak / (energyPeak + 0.2)) * this.zoomGain;
+        this.hum.gain.gain.setTargetAtTime(Math.max(level(energy), nearbyHum) * 0.52, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);
         this.sizzle.pan?.setTargetAtTime(organic ? organicPan / organic : 0, time, 0.07);
