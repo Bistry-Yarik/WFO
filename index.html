@@ -1379,7 +1379,7 @@ function draw() {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] * RADIATION_TINT_WEIGHT / soilLimit, 1);
-        const checker = !vectorDetail && !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
             || radiation[index] >= RADIATION_PALE_LIMIT;
@@ -1398,7 +1398,7 @@ function draw() {
     }
     const left = -Math.round(camera.x * pixelsPerCell);
     const top = -Math.round(camera.y * pixelsPerCell);
-    screen.imageSmoothingEnabled = vectorDetail;
+    screen.imageSmoothingEnabled = false;
     const pattern = screen.createPattern(tile, 'repeat');
     pattern.setTransform(new DOMMatrix().translate(left, top).scale(
         simulation.width * pixelsPerCell / tile.width,
