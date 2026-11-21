@@ -10,6 +10,10 @@ function soundDistance(delta, size) {
     return delta - Math.round(delta / size) * size;
 }
 
+function soundFalloff(x, y) {
+    return 0.06 + 0.94 / (1 + x * x + y * y);
+}
+
 export class WorldAudio {
     constructor(AudioContext) {
         const context = new AudioContext();
@@ -78,8 +82,8 @@ export class WorldAudio {
     setListener(world, camera, field) {
         this.width = world.width;
         this.height = world.height;
-        this.rangeX = Math.max(4, field.width / (2 * camera.zoom));
-        this.rangeY = Math.max(4, field.height / (2 * camera.zoom));
+        this.rangeX = Math.max(6, field.width / (2 * camera.zoom));
+        this.rangeY = Math.max(6, field.height / (2 * camera.zoom));
         this.cos = Math.cos(camera.angle ?? 0);
         this.sin = Math.sin(camera.angle ?? 0);
         const centerX = field.width / (2 * camera.zoom);
@@ -96,7 +100,7 @@ export class WorldAudio {
         const worldY = soundDistance(Math.floor(index / this.width) + 0.5 - this.y, this.height);
         const dx = (this.cos * worldX - this.sin * worldY) / this.rangeX;
         const dy = (this.sin * worldX + this.cos * worldY) / this.rangeY;
-        const gain = this.zoomGain / (1 + dx * dx + dy * dy);
+        const gain = this.zoomGain * soundFalloff(dx, dy);
         if (gain > (this.events[kind]?.gain ?? 0)) {
             this.events[kind] = { gain, pan: Math.max(-1, Math.min(1, dx)) };
         }
@@ -132,12 +136,10 @@ export class WorldAudio {
         this.lastUpdate = now;
         this.setListener(world, camera, field);
         const rotated = this.sin !== 0;
-        const horizontal = new Float64Array(this.width);
         const pans = new Float64Array(this.width);
         for (let x = 0; x < this.width; x++) {
             const distance = soundDistance(x + 0.5 - this.x, this.width);
             const dx = distance / this.rangeX;
-            horizontal[x] = 1 / (1 + dx * dx);
             pans[x] = rotated ? distance : dx;
         }
 
@@ -154,15 +156,14 @@ export class WorldAudio {
         for (let y = 0; y < this.height; y++) {
             const distance = soundDistance(y + 0.5 - this.y, this.height);
             const dy = distance / this.rangeY;
-            const vertical = 1 / (1 + dy * dy);
             for (let x = 0; x < this.width; x++) {
                 let pan = pans[x];
-                let weight = horizontal[x] * vertical;
+                let screenY = dy;
                 if (rotated) {
-                    const screenY = (this.sin * pan + this.cos * distance) / this.rangeY;
+                    screenY = (this.sin * pan + this.cos * distance) / this.rangeY;
                     pan = (this.cos * pan - this.sin * distance) / this.rangeX;
-                    weight = 1 / ((1 + pan * pan) * (1 + screenY * screenY));
                 }
+                const weight = soundFalloff(pan, screenY);
                 pan = Math.max(-1, Math.min(1, pan));
                 const index = y * this.width + x;
                 audibleWeight += weight;
