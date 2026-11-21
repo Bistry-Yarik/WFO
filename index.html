@@ -222,7 +222,8 @@ const DEATH_RADIATION = 300;
 const MUTATION_RADIATION_DIVISOR = 1.5;
 const CONVERSION_RATE = 150;
 const RADIATION_CLEANUP_RATE = 50;
-const CLEANUP_ENERGY_PER_RADIATION = 10 / 50;
+const CLEANUP_ENERGY_PER_RADIATION = 30 / 50;
+const CLEANUP_ORGANIC_PER_RADIATION = 5 / 50;
 const RADIATION_CLEANUP_MAX_RATE = 100;
 const STRONG_RADIATION = 750;
 const ORGANIC_THIRST_THRESHOLD = 100;
@@ -504,6 +505,7 @@ class Simulation {
         const removed = budget - remaining;
         if (removed >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
         cell.energy += removed * CLEANUP_ENERGY_PER_RADIATION;
+        cell.organic += removed * CLEANUP_ORGANIC_PER_RADIATION;
     }
 
     diffuse(resource, duration) {
