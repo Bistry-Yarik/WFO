@@ -756,13 +756,19 @@ class Simulation {
             return;
         }
 
-        const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
-        if (cell.energy < cost.energy || cell.organic < cost.organic) return;
+        const segment = cell.wormSegment ?? 0;
         let childType = type;
-        if (wormRole === 'right' && (this.radiation[index] >= 150
+        // Stagger support cells so most segments retain both collectors.
+        if (wormRole === 'left' && type === 'organic' && segment === 2) childType = 'converter';
+        if (wormRole === 'right' && type === 'energy' && segment === 3) childType = 'stomach';
+        if (wormRole === 'right' && childType === 'energy' && (this.radiation[index] >= 150
                 || this.neighbors(index).some(site => this.radiation[site] >= 150))
                 && this.random() < 0.2) childType = 'cleaner';
-        this.buildGrowthCell(cell, index, childType, cost, null, wormRole === 'front' ? 0 : null);
+
+        const cost = childType === 'channel' ? CHANNEL_COST : CELL_COST;
+        if (cell.energy < cost.energy || cell.organic < cost.organic) return;
+        const child = this.buildGrowthCell(cell, index, childType, cost, null, wormRole === 'front' ? 0 : null);
+        if (wormRole === 'front' && childType === 'channel') child.wormSegment = (segment + 1) % 4;
         cell.gene++;
     }
 
