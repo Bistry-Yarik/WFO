@@ -161,7 +161,7 @@ export class WorldAudio {
                 if (weight === 0) continue;
                 const index = y * this.width + x;
                 audibleWeight += weight;
-                const e = world.energy[index] >= soil ? soundStrength(world.energy[index], soil) * weight : 0;
+                const e = soundStrength(world.energy[index], soil) * weight;
                 const o = world.organic[index] >= soil ? soundStrength(world.organic[index], soil) * weight : 0;
                 const r = soundStrength(world.radiation[index], 1000) * weight;
                 energy += e;
@@ -176,7 +176,7 @@ export class WorldAudio {
         const time = this.context.currentTime;
         const normalization = 6 * Math.max(1, audibleWeight / 32);
         const level = weight => weight / (weight + normalization) * this.zoomGain;
-        this.hum.gain.gain.setTargetAtTime(level(energy) * 0.45, time, 0.07);
+        this.hum.gain.gain.setTargetAtTime(level(energy) * 0.52, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);
         this.sizzle.pan?.setTargetAtTime(organic ? organicPan / organic : 0, time, 0.07);
