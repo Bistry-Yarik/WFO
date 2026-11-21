@@ -86,8 +86,8 @@ function randomGenome(random) {
 
 const SPECIAL_PACKS = {
     solar: ['chlorophyll', 'converter', 'channel', 'chlorophyll', 'converter', 'chlorophyll', 'converter', 'organic', 'seed'],
-    devourer: ['organic', 'stomach', 'channel', 'teeth', 'chlorophyll', 'organic', 'teeth', 'stomach', 'seed'],
-    electric: ['energy', 'chlorophyll', 'channel', 'blueTeeth', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
+    devourer: ['organic', 'stomach', 'channel', 'cleaner', 'teeth', 'chlorophyll', 'organic', 'teeth', 'stomach', 'seed'],
+    electric: ['energy', 'chlorophyll', 'channel', 'cleaner', 'blueTeeth', 'converter', 'energy', 'chlorophyll', 'converter', 'energy', 'seed']
 };
 
 function packGenome(pack, random) {
@@ -119,7 +119,12 @@ function packGenome(pack, random) {
     }
     const types = SPECIAL_PACKS[pack];
     return types
-        ? types.map((type, step) => ({ type, direction: Math.floor(random() * DIRECTIONS.length), preferBuild: step < 2 }))
+        ? types.map((type, step) => ({
+            type,
+            direction: Math.floor(random() * DIRECTIONS.length),
+            preferBuild: step < 2 || type === 'cleaner',
+            ...(type === 'cleaner' && { seekRadiation: true, requiresRadiation: true })
+        }))
         : randomGenome(random);
 }
 
@@ -433,9 +438,9 @@ export class Simulation {
         return energy > organic ? 'energy' : 'organic';
     }
 
-    radiationGrowthSite(candidates) {
+    radiationGrowthSite(candidates, requiresRadiation = false) {
         let site;
-        let best = -1;
+        let best = requiresRadiation ? 0 : -1;
         for (const candidate of candidates) {
             if (this.cells.has(candidate) || !this.isSeedSiteSafe(candidate)) continue;
             const x = candidate % this.width;
@@ -604,7 +609,7 @@ export class Simulation {
             this.growWorm(cell, command);
             return;
         }
-        const { type, direction, preferBuild, branchStep, seekRadiation } = command;
+        const { type, direction, preferBuild, branchStep, seekRadiation, requiresRadiation } = command;
         const neighbors = this.neighbors(cell.index);
         const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
@@ -619,7 +624,7 @@ export class Simulation {
             });
             if (candidates.length) index = candidates[Math.floor(this.random() * candidates.length)];
         } else {
-            index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered) : ordered.find(candidate => {
+            index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered, requiresRadiation) : ordered.find(candidate => {
                 if (this.cells.has(candidate)) return false;
                 if (!biting) return true;
                 return this.neighbors(candidate).some(adjacent => {
@@ -627,6 +632,10 @@ export class Simulation {
                     return neighbor && neighbor.colony.family !== cell.colony.family;
                 });
             }));
+        }
+        if (requiresRadiation && index === undefined) {
+            cell.gene++;
+            return;
         }
         const buildFirst = (preferBuild || host) && index !== undefined
             && cell.energy >= requirements.energy && cell.organic >= requirements.organic;
