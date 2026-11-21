@@ -53,6 +53,7 @@ const TOOTH_RESOURCE = { teeth: 'organic', blueTeeth: 'energy' };
 const CELL_COST = { energy: 225, organic: 300 };
 const CHANNEL_COST = { energy: 40, organic: 50 };
 const SEED_COST = { energy: 170, organic: 75 };
+const WORM_TURN_SEED_COST = { energy: 260, organic: 400 };
 const THROWN_SEED_COST = { energy: 500, organic: SEED_COST.organic };
 const SEED_THROW_RANGE = 6;
 const SEED_REQUIREMENT_BASE = { energy: 225, organic: 100, throwEnergy: 675 };
@@ -93,9 +94,9 @@ function packGenome(pack, random) {
     if (pack === 'worm') {
         const heading = Math.floor(random() * DIRECTIONS.length);
         return [
+            { type: 'energy', direction: (heading + 1) % 4, wormRole: 'right' },
             { type: 'channel', direction: heading, wormRole: 'front' },
             { type: 'organic', direction: (heading + 3) % 4, wormRole: 'left' },
-            { type: 'energy', direction: (heading + 1) % 4, wormRole: 'right' },
             { type: 'seed', direction: heading, wormRole: 'turn' }
         ];
     }
@@ -502,7 +503,10 @@ export class Simulation {
 
     turnWorm(cell, direction) {
         const { energy, organic } = cell.colony.seedNeeds;
-        if (cell.energy < energy || cell.organic < organic || this.random() >= 0.12) return;
+        const cost = WORM_TURN_SEED_COST;
+        if (cell.energy < Math.max(energy, cost.energy + ENERGY_UPKEEP * GROWTH_INTERVAL)
+                || cell.organic < Math.max(organic, cost.organic + ORGANIC_UPKEEP * GROWTH_INTERVAL)
+                || this.random() >= 0.12) return;
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
         const [dx, dy] = DIRECTIONS[direction];
@@ -513,9 +517,9 @@ export class Simulation {
             const [sx, sy] = DIRECTIONS[(direction + turn) % DIRECTIONS.length];
             const site = this.wrappedIndex(x + sx + (supported ? dx : 0), y + sy + (supported ? dy : 0));
             if (this.cells.has(site) || !this.isSeedSiteSafe(site)) continue;
-            this.seed(site % this.width, Math.floor(site / this.width), cell.colony, SEED_COST, 'standard', turn);
-            cell.energy -= SEED_COST.energy;
-            cell.organic -= SEED_COST.organic;
+            this.seed(site % this.width, Math.floor(site / this.width), cell.colony, cost, 'standard', turn);
+            cell.energy -= cost.energy;
+            cell.organic -= cost.organic;
             return;
         }
     }
@@ -549,9 +553,12 @@ export class Simulation {
         if (wormRole === 'right' && childType === 'energy' && (this.radiation[index] >= 150
                 || this.neighbors(index).some(site => this.radiation[site] >= 150))
                 && this.random() < 0.2) childType = 'cleaner';
+        if (wormRole === 'right' && childType === 'energy' && segment === 0) childType = 'chlorophyll';
 
         const cost = childType === 'channel' ? CHANNEL_COST : CELL_COST;
-        if (cell.energy < cost.energy || cell.organic < cost.organic) return;
+        const reserveTime = GROWTH_INTERVAL + STEP;
+        if (cell.energy < cost.energy + ENERGY_UPKEEP * reserveTime
+                || cell.organic < cost.organic + ORGANIC_UPKEEP * reserveTime) return;
         const child = this.buildGrowthCell(cell, index, childType, cost, null, wormRole === 'front' ? 0 : null);
         if (wormRole === 'front' && childType === 'channel') child.wormSegment = (segment + 1) % 4;
         cell.gene++;
