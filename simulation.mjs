@@ -128,6 +128,7 @@ export class Simulation {
     constructor(random = Math.random, onDeath = null, limits = DEFAULT_LIMITS, width = WIDTH) {
         this.random = random;
         this.onDeath = onDeath;
+        this.onBirth = null;
         this.limits = limits;
         this.width = width;
         this.height = Math.round(width * HEIGHT / WIDTH);
@@ -212,6 +213,7 @@ export class Simulation {
             : this.makeCell(index, 'seed', colony, 1350);
         this.cells.set(index, seed);
         this.tickCells = null;
+        this.onBirth?.(index);
         return true;
     }
 
@@ -444,6 +446,7 @@ export class Simulation {
             if (type === 'channel') child.gene = branchStep ?? cell.gene + 1;
             this.cells.set(index, child);
             this.tickCells = null;
+            this.onBirth?.(index);
             cell.energy -= cost.energy;
             cell.organic -= cost.organic;
         }

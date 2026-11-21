@@ -1,4 +1,5 @@
 import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE, RADIATION_RESOURCE } from './simulation.mjs';
+import { WorldAudio } from './audio.mjs';
 
 const field = document.querySelector('#field');
 const screen = field.getContext('2d');
@@ -21,6 +22,8 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const viewport = document.querySelector('.viewport');
 const effectsEnabled = document.querySelector('#show-effects');
+const soundEnabled = document.querySelector('#sound-enabled');
+const soundStatus = document.querySelector('#sound-status');
 const familyColors = document.querySelector('#show-family-colors');
 const fieldPanel = viewport.closest('.field-panel');
 const fullscreen = document.querySelector('#fullscreen');
@@ -76,6 +79,7 @@ const names = {
 };
 
 const deathEffects = new Map();
+let worldAudio = null;
 let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
@@ -177,6 +181,7 @@ function drawCell(cell) {
 }
 
 function recordDeath(index, cause, resources) {
+    worldAudio?.record('death', index);
     if (!effectsEnabled.checked) return;
     if (deathEffects.size >= MAX_DEATH_EFFECTS || deathEffects.has(index)) return;
     deathEffects.set(index, { cause, resources, start: performance.now() });
@@ -629,6 +634,42 @@ async function toggleFullscreen() {
     updateFullscreen();
 }
 
+function recordBirth(index) {
+    worldAudio?.record('birth', index);
+}
+
+async function toggleSound() {
+    const previousAudio = worldAudio;
+    worldAudio = null;
+    simulation.onBirth = null;
+    soundStatus.textContent = '';
+    if (previousAudio) previousAudio.context.close().catch(() => {});
+    if (!soundEnabled.checked) return;
+    let audio;
+    try {
+        const AudioContext = window.AudioContext ?? window.webkitAudioContext;
+        audio = new WorldAudio(AudioContext);
+        worldAudio = audio;
+        audio.setListener(simulation, camera, field);
+        await audio.context.resume();
+        if (worldAudio === audio) simulation.onBirth = recordBirth;
+    } catch {
+        if (audio && worldAudio !== audio) return;
+        audio?.context.close().catch(() => {});
+        worldAudio = null;
+        soundEnabled.checked = false;
+        soundStatus.textContent = 'Звук недоступен в этом браузере';
+    }
+}
+
+soundEnabled.addEventListener('change', toggleSound);
+document.addEventListener('visibilitychange', () => {
+    if (!worldAudio) return;
+    const context = worldAudio.context;
+    const playback = document.hidden ? context.suspend() : context.resume();
+    playback.catch(() => {});
+});
+
 effectsEnabled.addEventListener('change', () => {
     deathEffects.clear();
     planted = -1;
@@ -674,6 +715,11 @@ function restart(width) {
         camera.x = 0;
         camera.y = 0;
         configureWorldCanvas();
+    }
+    if (worldAudio) {
+        simulation.onBirth = recordBirth;
+        worldAudio.events = {};
+        worldAudio.setListener(simulation, camera, field);
     }
     hovered = -1;
     planted = -1;
@@ -723,6 +769,7 @@ function frame(now) {
         runSimulationSlice(multiplier);
     }
     previous = now;
+    worldAudio?.update(now, simulation, camera, field);
     if (!paused && now - speedSampleAt >= 750) {
         const measured = (simulation.time - speedSampleTime) * 1000 / (now - speedSampleAt);
         actualSpeed.textContent = multiplier > 1 && measured < multiplier * 0.9
