@@ -54,6 +54,7 @@ const MAX_BACKLOG_SECONDS = 0.1;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
+const VECTOR_DETAIL_ZOOM = 20;
 const RADIATION_PALE_LIMIT = 1000;
 const RADIATION_TINT_WEIGHT = 2.5;
 const resourceRingColors = [
@@ -115,19 +116,19 @@ function channelStockColor(cell) {
     return [red, 82, blue];
 }
 
-function drawCell(cell) {
+function drawCell(cell, target = context) {
     const { width } = simulation;
     const x = (cell.index % width + (cell.host ? 0.73 : 0.5)) * scale;
     const y = (Math.floor(cell.index / width) + (cell.host ? 0.3 : 0.5)) * scale;
     let color = '#fff';
     if (familyColors.checked) color = `hsl(${cell.colony.hue} 80% 70%)`;
     else if (cell.type === 'channel') color = `rgb(${channelStockColor(cell).join(' ')})`;
-    context.fillStyle = color;
+    target.fillStyle = color;
     if (cell.type === 'channel') {
-        context.strokeStyle = color;
-        context.lineWidth = Math.max(scale / camera.zoom, 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
-        context.lineCap = 'round';
-        context.beginPath();
+        target.strokeStyle = color;
+        target.lineWidth = Math.max(scale / camera.zoom, 1.4 + Math.min(cell.flow / simulation.limits.flow, 1) * 6.6);
+        target.lineCap = 'round';
+        target.beginPath();
         simulation.neighbors(cell.index).forEach((index, direction) => {
             const neighbor = simulation.cells.get(index);
             if (!neighbor || neighbor.colony.family !== cell.colony.family) return;
@@ -135,48 +136,48 @@ function drawCell(cell) {
             const length = !familyColors.checked && neighbor.type === 'channel' ? scale / 2 : scale;
             const nx = x + dx * length;
             const ny = y + dy * length;
-            context.moveTo(x, y);
-            context.lineTo(nx, ny);
+            target.moveTo(x, y);
+            target.lineTo(nx, ny);
             const offsetX = nx < 0 ? worldCanvas.width : nx >= worldCanvas.width ? -worldCanvas.width : 0;
             const offsetY = ny < 0 ? worldCanvas.height : ny >= worldCanvas.height ? -worldCanvas.height : 0;
-            if (offsetX || offsetY) {
-                context.moveTo(x + offsetX, y + offsetY);
-                context.lineTo(nx + offsetX, ny + offsetY);
+            if (target === context && (offsetX || offsetY)) {
+                target.moveTo(x + offsetX, y + offsetY);
+                target.lineTo(nx + offsetX, ny + offsetY);
             }
         });
-        context.stroke();
-        context.beginPath();
-        context.arc(x, y, Math.max(scale * 1.1 / camera.zoom, context.lineWidth / 2), 0, Math.PI * 2);
-        context.fill();
+        target.stroke();
+        target.beginPath();
+        target.arc(x, y, Math.max(scale * 1.1 / camera.zoom, target.lineWidth / 2), 0, Math.PI * 2);
+        target.fill();
     } else if (cell.type === 'seed') {
-        context.beginPath();
-        context.arc(x, y, 3.7, 0, Math.PI * 2);
-        context.fill();
+        target.beginPath();
+        target.arc(x, y, 3.7, 0, Math.PI * 2);
+        target.fill();
     } else if (cell.type === 'chlorophyll') {
-        context.fillStyle = '#65e592';
-        context.beginPath();
-        context.moveTo(x, y - 4.3);
-        context.lineTo(x + 4.3, y);
-        context.lineTo(x, y + 4.3);
-        context.lineTo(x - 4.3, y);
-        context.fill();
+        target.fillStyle = '#65e592';
+        target.beginPath();
+        target.moveTo(x, y - 4.3);
+        target.lineTo(x + 4.3, y);
+        target.lineTo(x, y + 4.3);
+        target.lineTo(x - 4.3, y);
+        target.fill();
     } else if (cell.type === 'converter' || cell.type === 'teeth' || cell.type === 'cleaner' || cell.type === 'stomach') {
         const sides = { teeth: 3, converter: 5, cleaner: 6, stomach: 10 }[cell.type];
-        context.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
-        context.beginPath();
+        target.fillStyle = `rgb(${overviewColors[cell.type].join(' ')})`;
+        target.beginPath();
         for (let point = 0; point < sides; point++) {
             const angle = -Math.PI / 2 + point * 2 * Math.PI / sides;
             const radius = cell.host ? 2.5 : cell.type === 'stomach' && point % 2 ? 2.05 : 4.3;
             const px = x + Math.cos(angle) * radius;
             const py = y + Math.sin(angle) * radius;
-            if (point === 0) context.moveTo(px, py);
-            else context.lineTo(px, py);
+            if (point === 0) target.moveTo(px, py);
+            else target.lineTo(px, py);
         }
-        context.closePath();
-        context.fill();
+        target.closePath();
+        target.fill();
     } else {
-        context.fillStyle = cell.type === 'organic' ? '#f66b77' : '#69b3ff';
-        context.fillRect(x - 3.6, y - 3.6, 7.2, 7.2);
+        target.fillStyle = cell.type === 'organic' ? '#f66b77' : '#69b3ff';
+        target.fillRect(x - 3.6, y - 3.6, 7.2, 7.2);
     }
 }
 
@@ -263,6 +264,7 @@ function draw() {
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
+    const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM;
     const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
         || (simulation.cells.size >= DENSE_MAP_CELLS
             && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
@@ -270,7 +272,7 @@ function draw() {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
         const green = Math.min(radiation[index] * RADIATION_TINT_WEIGHT / soilLimit, 1);
-        const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const checker = !vectorDetail && !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
         const offset = index * 4;
         const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
             || radiation[index] >= RADIATION_PALE_LIMIT;
@@ -280,9 +282,16 @@ function draw() {
         pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
         pixels[offset + 3] = 255;
     }
-    const tile = useOverview ? drawOverview() : drawDetailedWorld();
+    let tile;
+    if (vectorDetail) {
+        terrainContext.putImageData(terrainPixels, 0, 0);
+        tile = terrain;
+    } else {
+        tile = useOverview ? drawOverview() : drawDetailedWorld();
+    }
     const left = -Math.round(camera.x * pixelsPerCell);
     const top = -Math.round(camera.y * pixelsPerCell);
+    screen.imageSmoothingEnabled = vectorDetail;
     const pattern = screen.createPattern(tile, 'repeat');
     pattern.setTransform(new DOMMatrix().translate(left, top).scale(
         simulation.width * pixelsPerCell / tile.width,
@@ -290,6 +299,61 @@ function draw() {
     ));
     screen.fillStyle = pattern;
     screen.fillRect(0, 0, field.width, field.height);
+    if (vectorDetail) drawVisibleCells(left, top, pixelsPerCell);
+}
+
+function drawVisibleCells(left, top, pixels) {
+    const { width, height, cells, parasites } = simulation;
+    const channels = [];
+    const otherCells = [];
+    const attached = [];
+    const startX = Math.floor(-left / pixels) - 1;
+    const endX = Math.ceil((field.width - left) / pixels) + 1;
+    const startY = Math.floor(-top / pixels) - 1;
+    const endY = Math.ceil((field.height - top) / pixels) + 1;
+    for (let y = startY; y < endY; y++) {
+        const row = wrap(y, height);
+        for (let x = startX; x < endX; x++) {
+            const column = wrap(x, width);
+            const index = row * width + column;
+            const cell = cells.get(index);
+            if (!cell) continue;
+            const offsetX = left + (x - column) * pixels;
+            const offsetY = top + (y - row) * pixels;
+            const layer = cell.type === 'channel' ? channels : otherCells;
+            layer.push({ cell, offsetX, offsetY });
+            const parasite = parasites.get(index);
+            if (parasite) attached.push({ cell: parasite, offsetX, offsetY });
+        }
+    }
+
+    screen.save();
+    const ratio = pixels / scale;
+    for (const layer of [channels, otherCells, attached]) {
+        for (const { cell, offsetX, offsetY } of layer) {
+            screen.setTransform(ratio, 0, 0, ratio, offsetX, offsetY);
+            drawCell(cell, screen);
+        }
+    }
+    if (effectsEnabled.checked && (deathEffects.size || planted >= 0)) {
+        const tileWidth = width * pixels;
+        const tileHeight = height * pixels;
+        const firstX = -wrap(-left, tileWidth);
+        const firstY = -wrap(-top, tileHeight);
+        screen.resetTransform();
+        for (let y = firstY; y < field.height; y += tileHeight) {
+            for (let x = firstX; x < field.width; x += tileWidth) {
+                screen.save();
+                screen.beginPath();
+                screen.rect(x, y, tileWidth, tileHeight);
+                screen.clip();
+                screen.setTransform(ratio, 0, 0, ratio, x, y);
+                drawEffects(screen);
+                screen.restore();
+            }
+        }
+    }
+    screen.restore();
 }
 
 function drawDetailedWorld() {
