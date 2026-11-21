@@ -188,7 +188,7 @@ export class WorldAudio {
         const nearbyHum = 0.38 * (energyPeak / (energyPeak + 0.16)) ** 0.85 * this.zoomGain;
         const pitchStrength = soundStrength(maxEnergy, soil) * (maxEnergy / (maxEnergy + 60));
         this.humFrequency.setTargetAtTime(65 + 155 * pitchStrength / (pitchStrength + 0.5), time, 0.12);
-        this.hum.gain.gain.setTargetAtTime(Math.max(level(energy), nearbyHum) * 0.52, time, 0.07);
+        this.hum.gain.gain.setTargetAtTime(Math.max(level(energy), nearbyHum) * 0.36, time, 0.07);
         this.sizzle.gain.gain.setTargetAtTime(level(organic) * 0.8, time, 0.07);
         this.hum.pan?.setTargetAtTime(energy ? energyPan / energy : 0, time, 0.07);
         this.sizzle.pan?.setTargetAtTime(organic ? organicPan / organic : 0, time, 0.07);
