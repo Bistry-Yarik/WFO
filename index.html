@@ -241,6 +241,7 @@ const RADIATION_CLEANUP_RATE = 50;
 const CLEANUP_ENERGY_PER_RADIATION = 30 / 50;
 const CLEANUP_ORGANIC_PER_RADIATION = 5 / 50;
 const RADIATION_CLEANUP_MAX_RATE = 100;
+const CLEANER_GROWTH_RADIATION = 150;
 const STRONG_RADIATION = 750;
 const ORGANIC_THIRST_THRESHOLD = 100;
 const ENERGY_UPKEEP = 5;
@@ -655,17 +656,21 @@ class Simulation {
 
     radiationGrowthSite(candidates, requiresRadiation = false) {
         let site;
-        let best = requiresRadiation ? 0 : -1;
+        let best = -1;
         for (const candidate of candidates) {
             if (this.cells.has(candidate) || !this.isSeedSiteSafe(candidate)) continue;
             const x = candidate % this.width;
             const y = Math.floor(candidate / this.width);
             let radiation = 0;
+            let peak = 0;
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
-                    radiation += this.radiation[this.wrappedIndex(x + dx, y + dy)];
+                    const dose = this.radiation[this.wrappedIndex(x + dx, y + dy)];
+                    radiation += dose;
+                    peak = Math.max(peak, dose);
                 }
             }
+            if (requiresRadiation && peak < CLEANER_GROWTH_RADIATION) continue;
             if (radiation > best) {
                 best = radiation;
                 site = candidate;
