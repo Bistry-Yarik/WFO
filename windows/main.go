@@ -11,6 +11,8 @@ import (
 	"unsafe"
 )
 
+const aboveNormalPriorityClass = 0x00008000
+
 //go:embed index.html
 var game []byte
 
@@ -43,8 +45,13 @@ func launch() error {
 			continue
 		}
 		edge := filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe")
-		if err := exec.Command(edge, "--app="+address).Start(); err == nil {
-			return nil
+		// A separate profile starts WFO in its own Edge process instead of
+		// forwarding the window to an existing browser at normal priority.
+		command := exec.Command(edge, "--user-data-dir="+filepath.Join(dir, "Edge"),
+			"--disable-renderer-backgrounding", "--app="+address)
+		command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: aboveNormalPriorityClass}
+		if err := command.Start(); err == nil {
+			return command.Process.Release()
 		}
 	}
 	verb := utf16("open")
