@@ -2,30 +2,34 @@ package main
 
 import (
 	_ "embed"
-	"fmt"
+	"errors"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"unsafe"
-)
 
-const aboveNormalPriorityClass = 0x00008000
+	webview2 "github.com/jchv/go-webview2"
+	"github.com/jchv/go-webview2/webviewloader"
+	"golang.org/x/sys/windows"
+)
 
 //go:embed index.html
 var game []byte
 
 func main() {
+	runtime.LockOSThread()
 	if err := launch(); err != nil {
-		message := utf16("Не удалось открыть WFO.\n" + err.Error())
-		title := utf16("WFO")
-		syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(
-			0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+		showError("Не удалось открыть WFO.\n" + err.Error())
 	}
 }
 
 func launch() error {
+	version, err := webviewloader.GetInstalledVersion()
+	if err != nil || version == "" {
+		return errors.New("Установите Microsoft WebView2 Runtime: https://aka.ms/webview2")
+	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return err
@@ -38,33 +42,29 @@ func launch() error {
 	if err := os.WriteFile(page, game, 0600); err != nil {
 		return err
 	}
+
+	_ = windows.SetPriorityClass(windows.CurrentProcess(), windows.ABOVE_NORMAL_PRIORITY_CLASS)
+	view := webview2.NewWithOptions(webview2.WebViewOptions{
+		DataPath:  filepath.Join(dir, "WebView2"),
+		AutoFocus: true,
+		WindowOptions: webview2.WindowOptions{
+			Title: "WFO", Width: 1100, Height: 750, IconId: 1, Center: true,
+		},
+	})
+	if view == nil {
+		return errors.New("Не удалось создать окно WebView2.")
+	}
+	defer view.Destroy()
+
 	address := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(page)}).String()
-	for _, variable := range []string{"ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"} {
-		root := os.Getenv(variable)
-		if root == "" {
-			continue
-		}
-		edge := filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe")
-		// A separate profile starts WFO in its own Edge process instead of
-		// forwarding the window to an existing browser at normal priority.
-		command := exec.Command(edge, "--user-data-dir="+filepath.Join(dir, "Edge"),
-			"--disable-renderer-backgrounding", "--app="+address)
-		command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: aboveNormalPriorityClass}
-		if err := command.Start(); err == nil {
-			return command.Process.Release()
-		}
-	}
-	verb := utf16("open")
-	file := utf16(page)
-	result, _, _ := syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteW").Call(
-		0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, 0, 1)
-	if result <= 32 {
-		return fmt.Errorf("Windows ShellExecute: %d (%s)", result, page)
-	}
+	view.Navigate(address)
+	view.Run()
 	return nil
 }
 
-func utf16(text string) *uint16 {
-	value, _ := syscall.UTF16PtrFromString(text)
-	return value
+func showError(message string) {
+	text, _ := syscall.UTF16PtrFromString(message)
+	title, _ := syscall.UTF16PtrFromString("WFO")
+	syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(
+		0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
 }
