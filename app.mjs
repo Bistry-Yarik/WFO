@@ -23,6 +23,8 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const viewport = document.querySelector('.viewport');
+const graphicsSettings = document.querySelector('#graphics-settings');
+const graphicsMode = document.querySelector('#graphics-mode');
 const effectsEnabled = document.querySelector('#show-effects');
 const soundEnabled = document.querySelector('#sound-enabled');
 const soundStatus = document.querySelector('#sound-status');
@@ -284,12 +286,14 @@ function draw() {
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
     const visibleArea = field.width * field.height / (pixelsPerCell * pixelsPerCell);
-    const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
+    const autoOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
         || (worldCanvas.width === 1 && visibleArea >= energy.length)
         || (simulation.cells.size >= DENSE_MAP_CELLS
             && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
-    const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM
-        || (!useOverview && visibleArea < energy.length);
+    const useOverview = graphicsMode.value === 'overview'
+        || (graphicsMode.value === 'auto' && pixelsPerCell < VECTOR_DETAIL_ZOOM && autoOverview);
+    const vectorDetail = !useOverview && (graphicsMode.value === 'detail'
+        || pixelsPerCell >= VECTOR_DETAIL_ZOOM || visibleArea < energy.length);
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
@@ -864,6 +868,8 @@ document.addEventListener('visibilitychange', () => {
     playback.catch(() => {});
 });
 
+document.querySelector('#open-graphics').addEventListener('click', () => graphicsSettings.showModal());
+graphicsMode.addEventListener('change', draw);
 effectsEnabled.addEventListener('change', () => {
     deathEffects.clear();
     planted = -1;

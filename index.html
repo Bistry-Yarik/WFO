@@ -111,6 +111,22 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #seed-pack { max-width: min(240px, 68vw); }
 
 .toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+
+#open-graphics { min-width: 36px; font-family: system-ui, sans-serif; font-size: 1.15rem; line-height: 1; }
+#graphics-settings {
+    box-sizing: border-box;
+    width: min(320px, calc(100vw - 24px));
+    color: inherit;
+    background: #182720;
+    border: 1px solid #415a4d;
+    border-radius: 10px;
+    padding: 16px;
+}
+#graphics-settings::backdrop { background: #08130db3; }
+#graphics-settings form { display: grid; gap: 12px; }
+#graphics-settings h2 { margin: 0; font-size: 1.1rem; }
+#graphics-settings .graphics-quality { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#graphics-settings button { justify-self: end; }
 </style>
 </head>
 <body>
@@ -153,8 +169,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                         <button id="zoom-in" type="button" aria-label="Увеличить масштаб">+</button>
                         <button id="reset-angle" type="button" aria-label="Выровнять камеру до 0 градусов" disabled>0°</button>
                     </div>
-                    <label class="toggle"><input id="show-effects" type="checkbox" checked> Эффекты</label>
-                    <label class="toggle" title="Без цвета рода каналы показывают запасы: синим энергию, красным органику"><input id="show-family-colors" type="checkbox" checked> Цвета рода</label>
+                    <button id="open-graphics" type="button" aria-label="Настройки графики" aria-haspopup="dialog" title="Настройки графики">⚙</button>
                     <label class="toggle"><input id="sound-enabled" type="checkbox"> Звук</label>
                     <span id="sound-status" class="speed-status" role="status"></span>
                     <label class="toggle"><input id="enable-rotation" type="checkbox" checked> Поворот</label>
@@ -162,6 +177,19 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <button id="reset" type="button">Сбросить</button>
                 </div>
             </div>
+            <dialog id="graphics-settings" aria-labelledby="graphics-title">
+                <form method="dialog">
+                    <h2 id="graphics-title">Настройки графики</h2>
+                    <label class="graphics-quality">Отрисовка <select id="graphics-mode" autofocus>
+                        <option value="auto">Авто</option>
+                        <option value="overview">Упрощённая</option>
+                        <option value="detail">Детальная</option>
+                    </select></label>
+                    <label class="toggle"><input id="show-effects" type="checkbox" checked> Эффекты</label>
+                    <label class="toggle" title="Без цвета рода каналы показывают запасы: синим энергию, красным органику"><input id="show-family-colors" type="checkbox" checked> Цвета рода</label>
+                    <button type="submit">Готово</button>
+                </form>
+            </dialog>
             <form id="field-size">
                 <label for="field-width">Ширина поля (пикс.)</label>
                 <input id="field-width" type="number" min="32" value="100" required>
@@ -1436,6 +1464,8 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const viewport = document.querySelector('.viewport');
+const graphicsSettings = document.querySelector('#graphics-settings');
+const graphicsMode = document.querySelector('#graphics-mode');
 const effectsEnabled = document.querySelector('#show-effects');
 const soundEnabled = document.querySelector('#sound-enabled');
 const soundStatus = document.querySelector('#sound-status');
@@ -1697,12 +1727,14 @@ function draw() {
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
     const visibleArea = field.width * field.height / (pixelsPerCell * pixelsPerCell);
-    const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
+    const autoOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
         || (worldCanvas.width === 1 && visibleArea >= energy.length)
         || (simulation.cells.size >= DENSE_MAP_CELLS
             && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
-    const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM
-        || (!useOverview && visibleArea < energy.length);
+    const useOverview = graphicsMode.value === 'overview'
+        || (graphicsMode.value === 'auto' && pixelsPerCell < VECTOR_DETAIL_ZOOM && autoOverview);
+    const vectorDetail = !useOverview && (graphicsMode.value === 'detail'
+        || pixelsPerCell >= VECTOR_DETAIL_ZOOM || visibleArea < energy.length);
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
@@ -2277,6 +2309,8 @@ document.addEventListener('visibilitychange', () => {
     playback.catch(() => {});
 });
 
+document.querySelector('#open-graphics').addEventListener('click', () => graphicsSettings.showModal());
+graphicsMode.addEventListener('change', draw);
 effectsEnabled.addEventListener('change', () => {
     deathEffects.clear();
     planted = -1;

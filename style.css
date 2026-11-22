@@ -104,3 +104,19 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #seed-pack { max-width: min(240px, 68vw); }
 
 .toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+
+#open-graphics { min-width: 36px; font-family: system-ui, sans-serif; font-size: 1.15rem; line-height: 1; }
+#graphics-settings {
+    box-sizing: border-box;
+    width: min(320px, calc(100vw - 24px));
+    color: inherit;
+    background: #182720;
+    border: 1px solid #415a4d;
+    border-radius: 10px;
+    padding: 16px;
+}
+#graphics-settings::backdrop { background: #08130db3; }
+#graphics-settings form { display: grid; gap: 12px; }
+#graphics-settings h2 { margin: 0; font-size: 1.1rem; }
+#graphics-settings .graphics-quality { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#graphics-settings button { justify-self: end; }
