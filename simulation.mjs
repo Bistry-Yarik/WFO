@@ -762,6 +762,17 @@ export class Simulation {
         }
     }
 
+    removeDisconnectedCells(collection) {
+        for (const cell of collection.values()) {
+            if (cell.type === 'channel' || cell.type === 'seed') continue;
+            const connected = this.neighbors(cell.index).some(index => {
+                const neighbor = this.cells.get(index);
+                return neighbor?.type === 'channel' && neighbor.colony.family === cell.colony.family;
+            });
+            if (!connected) this.drop(cell, 'disconnected', 0);
+        }
+    }
+
     prepareTick(daylight) {
         if (this.tickCells?.length === this.cells.size + this.parasites.size && this.tickDaylight === daylight) return;
         let grid = null;
@@ -968,6 +979,8 @@ export class Simulation {
             }
         }
         this.removeToxicCells();
+        if (this.parasites.size) this.removeDisconnectedCells(this.parasites);
+        this.removeDisconnectedCells(this.cells);
         if (tickNumber % RECYCLE_CHECK_TICKS === 0) this.recycleUnusedCells();
         if (needsColonyCleanup || this.tickCells === null) this.pruneColonies();
     }

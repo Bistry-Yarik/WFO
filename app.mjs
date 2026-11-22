@@ -222,9 +222,10 @@ function drawDeathEffects(now, target = context) {
         const x = (index % width + 0.5) * scale;
         const y = (Math.floor(index / width) + 0.5) * scale;
         const impact = effect.cause === 'impact';
-        const expansion = effect.cause === 'deficit' ? 1 - progress : progress;
+        const disconnected = effect.cause === 'disconnected';
+        const expansion = disconnected || effect.cause === 'deficit' ? 1 - progress : progress;
         const radius = 2 + (impact ? 20 : 16) * expansion;
-        const segments = impact ? [[0, '#fff']] : resourceRingColors.filter(([resource]) => effect.resources & resource);
+        const segments = impact || disconnected ? [[0, '#fff']] : resourceRingColors.filter(([resource]) => effect.resources & resource);
         const sweep = 2 * Math.PI / segments.length;
         target.globalAlpha = 1 - progress;
         for (let i = 0; i < segments.length; i++) {

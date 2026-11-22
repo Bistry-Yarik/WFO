@@ -977,6 +977,17 @@ class Simulation {
         }
     }
 
+    removeDisconnectedCells(collection) {
+        for (const cell of collection.values()) {
+            if (cell.type === 'channel' || cell.type === 'seed') continue;
+            const connected = this.neighbors(cell.index).some(index => {
+                const neighbor = this.cells.get(index);
+                return neighbor?.type === 'channel' && neighbor.colony.family === cell.colony.family;
+            });
+            if (!connected) this.drop(cell, 'disconnected', 0);
+        }
+    }
+
     prepareTick(daylight) {
         if (this.tickCells?.length === this.cells.size + this.parasites.size && this.tickDaylight === daylight) return;
         let grid = null;
@@ -1183,6 +1194,8 @@ class Simulation {
             }
         }
         this.removeToxicCells();
+        if (this.parasites.size) this.removeDisconnectedCells(this.parasites);
+        this.removeDisconnectedCells(this.cells);
         if (tickNumber % RECYCLE_CHECK_TICKS === 0) this.recycleUnusedCells();
         if (needsColonyCleanup || this.tickCells === null) this.pruneColonies();
     }
@@ -1622,9 +1635,10 @@ function drawDeathEffects(now, target = context) {
         const x = (index % width + 0.5) * scale;
         const y = (Math.floor(index / width) + 0.5) * scale;
         const impact = effect.cause === 'impact';
-        const expansion = effect.cause === 'deficit' ? 1 - progress : progress;
+        const disconnected = effect.cause === 'disconnected';
+        const expansion = disconnected || effect.cause === 'deficit' ? 1 - progress : progress;
         const radius = 2 + (impact ? 20 : 16) * expansion;
-        const segments = impact ? [[0, '#fff']] : resourceRingColors.filter(([resource]) => effect.resources & resource);
+        const segments = impact || disconnected ? [[0, '#fff']] : resourceRingColors.filter(([resource]) => effect.resources & resource);
         const sweep = 2 * Math.PI / segments.length;
         target.globalAlpha = 1 - progress;
         for (let i = 0; i < segments.length; i++) {
