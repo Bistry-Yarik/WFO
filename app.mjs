@@ -25,6 +25,7 @@ const mapTool = document.querySelector('#map-tool');
 const viewport = document.querySelector('.viewport');
 const graphicsSettings = document.querySelector('#graphics-settings');
 const graphicsMode = document.querySelector('#graphics-mode');
+const boostCompute = document.querySelector('#boost-compute');
 const effectsEnabled = document.querySelector('#show-effects');
 const soundEnabled = document.querySelector('#sound-enabled');
 const soundStatus = document.querySelector('#sound-status');
@@ -52,6 +53,9 @@ const SIMULATION_SLICE_MS = 8;
 const FAST_SIMULATION_SLICE_MS = 16;
 const COMPUTE_PRIORITY_SPEED = 500;
 const CONTINUOUS_SPEED = 150;
+const BOOST_SPEED = 50;
+const BOOST_SLICE_MS = 24;
+const BOOST_DRAW_INTERVAL = 1000 / 12;
 const simulationTasks = new MessageChannel();
 const FAST_DRAW_INTERVAL = 1000 / 30;
 const COMPUTE_PRIORITY_DRAW_INTERVAL = 1000 / 20;
@@ -870,6 +874,7 @@ document.addEventListener('visibilitychange', () => {
 
 document.querySelector('#open-graphics').addEventListener('click', () => graphicsSettings.showModal());
 graphicsMode.addEventListener('change', draw);
+boostCompute.addEventListener('change', resetSpeedSample);
 effectsEnabled.addEventListener('change', () => {
     deathEffects.clear();
     planted = -1;
@@ -946,18 +951,24 @@ fieldSizeForm.addEventListener('submit', event => {
 });
 document.querySelector('#reset').addEventListener('click', () => restart(simulation.width));
 
+function continuousSpeed() {
+    return boostCompute.checked ? BOOST_SPEED : CONTINUOUS_SPEED;
+}
+
 function runSimulationSlice(multiplier) {
     const now = performance.now();
     elapsed = Math.min(elapsed + (now - simulationUpdatedAt) / 1000 * multiplier,
         MAX_BACKLOG_SECONDS * multiplier + STEP);
     simulationUpdatedAt = now;
-    const slice = multiplier >= COMPUTE_PRIORITY_SPEED ? FAST_SIMULATION_SLICE_MS : SIMULATION_SLICE_MS;
+    const boosted = boostCompute.checked && multiplier >= BOOST_SPEED;
+    const standardSlice = multiplier >= COMPUTE_PRIORITY_SPEED ? FAST_SIMULATION_SLICE_MS : SIMULATION_SLICE_MS;
+    const slice = boosted ? BOOST_SLICE_MS : standardSlice;
     const deadline = now + slice;
     while (elapsed >= STEP && performance.now() < deadline) {
         simulation.tick();
         elapsed -= STEP;
     }
-    if (multiplier >= CONTINUOUS_SPEED && elapsed >= STEP) {
+    if (multiplier >= continuousSpeed() && elapsed >= STEP) {
         simulationTaskPending = true;
         simulationTasks.port2.postMessage(null);
     }
@@ -966,7 +977,7 @@ function runSimulationSlice(multiplier) {
 simulationTasks.port1.onmessage = () => {
     simulationTaskPending = false;
     const multiplier = Number(speed.value);
-    if (!paused && !document.hidden && multiplier >= CONTINUOUS_SPEED) runSimulationSlice(multiplier);
+    if (!paused && !document.hidden && multiplier >= continuousSpeed()) runSimulationSlice(multiplier);
 };
 
 function frame(now) {
@@ -993,7 +1004,9 @@ function frame(now) {
     if (multiplier >= COMPUTE_PRIORITY_SPEED) {
         drawInterval = simulation.cells.size >= DENSE_MAP_CELLS ? DENSE_DRAW_INTERVAL : COMPUTE_PRIORITY_DRAW_INTERVAL;
     }
-    if (multiplier <= 100 || cameraKeys.size || press || pinch || now - lastDraw >= drawInterval) {
+    const boosted = !paused && boostCompute.checked && multiplier >= BOOST_SPEED;
+    if (boosted) drawInterval = Math.max(drawInterval, BOOST_DRAW_INTERVAL);
+    if ((!boosted && multiplier <= 100) || cameraKeys.size || press || pinch || now - lastDraw >= drawInterval) {
         draw();
         updateReadout();
         lastDraw = now;
