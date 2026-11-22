@@ -273,10 +273,12 @@ function draw() {
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
-    const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM;
     const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
         || (simulation.cells.size >= DENSE_MAP_CELLS
             && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
+    const visibleArea = field.width * field.height / (pixelsPerCell * pixelsPerCell);
+    const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM
+        || (!useOverview && visibleArea < energy.length);
     for (let index = 0; index < energy.length; index++) {
         const blue = Math.min(energy[index] / soilLimit, 1);
         const red = Math.min(organic[index] / soilLimit, 1);
