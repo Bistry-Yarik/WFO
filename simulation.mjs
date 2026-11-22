@@ -156,7 +156,7 @@ export class Simulation {
         this.neighborCache = new Array(this.energy.length);
         this.throwSites = new Uint32Array(THROW_OFFSETS.length);
         this.throwColumns = Array.from({ length: width }, (_, x) =>
-            Uint16Array.from(THROW_OFFSETS, ([dx]) => (x + dx + width) % width));
+            Uint32Array.from(THROW_OFFSETS, ([dx]) => (x + dx + width) % width));
         this.throwRows = Array.from({ length: this.height }, (_, y) =>
             Uint32Array.from(THROW_OFFSETS, ([, dy]) => ((y + dy + this.height) % this.height) * width));
         this.organic = Float64Array.from(this.energy, () => 350 + random() * 750);

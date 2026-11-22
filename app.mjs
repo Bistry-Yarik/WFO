@@ -6,8 +6,9 @@ const screen = field.getContext('2d');
 const worldCanvas = document.createElement('canvas');
 const context = worldCanvas.getContext('2d');
 const scale = 10;
-const terrain = document.createElement('canvas');
-const terrainContext = terrain.getContext('2d');
+let terrain;
+let terrainContext;
+const MAX_CACHED_DETAIL_CELLS = 40_000;
 let terrainPixels;
 const pause = document.querySelector('#pause');
 const speed = document.querySelector('#speed');
@@ -102,13 +103,21 @@ let lastDraw = 0;
 let speedSampleAt = previous;
 let speedSampleTime = 0;
 
-function configureWorldCanvas() {
-    const { width, height } = simulation;
-    worldCanvas.width = width * scale;
-    worldCanvas.height = height * scale;
-    terrain.width = width;
-    terrain.height = height;
-    terrainPixels = terrainContext.createImageData(width, height);
+function configureWorldCanvas({ width, height } = simulation) {
+    const nextTerrain = document.createElement('canvas');
+    nextTerrain.width = width;
+    nextTerrain.height = height;
+    const nextContext = nextTerrain.getContext('2d');
+    // Canvas can accept dimensions beyond what the browser can actually draw.
+    nextContext.fillRect(0, 0, 1, 1);
+    if (!nextContext.getImageData(0, 0, 1, 1).data[3]) throw new RangeError('Canvas allocation failed');
+    const nextPixels = nextContext.createImageData(width, height);
+    const cacheDetail = width * height <= MAX_CACHED_DETAIL_CELLS;
+    worldCanvas.width = cacheDetail ? width * scale : 1;
+    worldCanvas.height = cacheDetail ? height * scale : 1;
+    terrain = nextTerrain;
+    terrainContext = nextContext;
+    terrainPixels = nextPixels;
     context.imageSmoothingEnabled = false;
     field.setAttribute('aria-label', `Поле ${width} на ${height} клеток. Нажмите, чтобы посадить семечко.`);
 }
@@ -142,8 +151,8 @@ function drawCell(cell, target = context) {
             const ny = y + dy * length;
             target.moveTo(x, y);
             target.lineTo(nx, ny);
-            const offsetX = nx < 0 ? worldCanvas.width : nx >= worldCanvas.width ? -worldCanvas.width : 0;
-            const offsetY = ny < 0 ? worldCanvas.height : ny >= worldCanvas.height ? -worldCanvas.height : 0;
+            const offsetX = nx < 0 ? simulation.width * scale : nx >= simulation.width * scale ? -simulation.width * scale : 0;
+            const offsetY = ny < 0 ? simulation.height * scale : ny >= simulation.height * scale ? -simulation.height * scale : 0;
             if (target === context && (offsetX || offsetY)) {
                 target.moveTo(x + offsetX, y + offsetY);
                 target.lineTo(nx + offsetX, ny + offsetY);
@@ -196,7 +205,8 @@ function recordDeath(index, cause, resources) {
 }
 
 function wrappedArc(x, y, radius, start, end, target = context) {
-    const { width, height } = worldCanvas;
+    const width = simulation.width * scale;
+    const height = simulation.height * scale;
     const offsetX = x - radius < 0 ? width : x + radius > width ? -width : 0;
     const offsetY = y - radius < 0 ? height : y + radius > height ? -height : 0;
     for (const dx of offsetX ? [0, offsetX] : [0]) {
@@ -273,10 +283,11 @@ function draw() {
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
     const pixelsPerCell = camera.zoom;
+    const visibleArea = field.width * field.height / (pixelsPerCell * pixelsPerCell);
     const useOverview = pixelsPerCell <= OVERVIEW_MAX_ZOOM
+        || (worldCanvas.width === 1 && visibleArea >= energy.length)
         || (simulation.cells.size >= DENSE_MAP_CELLS
             && (Number(speed.value) >= COMPUTE_PRIORITY_SPEED || (Number(speed.value) > 250 && pixelsPerCell <= FAST_OVERVIEW_MAX_ZOOM)));
-    const visibleArea = field.width * field.height / (pixelsPerCell * pixelsPerCell);
     const vectorDetail = pixelsPerCell >= VECTOR_DETAIL_ZOOM
         || (!useOverview && visibleArea < energy.length);
     for (let index = 0; index < energy.length; index++) {
@@ -892,12 +903,22 @@ speed.addEventListener('change', resetSpeedSample);
 document.addEventListener('visibilitychange', resetSpeedSample);
 function restart(width) {
     const resized = simulation.width !== width;
+    let nextSimulation;
+    try {
+        if (!Number.isSafeInteger(width)) throw new RangeError('Invalid width');
+        nextSimulation = new Simulation(Math.random, recordDeath, simulation.limits, width);
+        if (resized) configureWorldCanvas(nextSimulation);
+    } catch (error) {
+        if (!(error instanceof RangeError || error instanceof DOMException)) throw error;
+        fieldWidth.setCustomValidity('Браузер не смог создать поле такого размера. Укажите меньшую ширину.');
+        fieldWidth.reportValidity();
+        return;
+    }
     deathEffects.clear();
-    simulation = new Simulation(Math.random, recordDeath, simulation.limits, width);
+    simulation = nextSimulation;
     if (resized) {
         camera.x = 0;
         camera.y = 0;
-        configureWorldCanvas();
     }
     if (worldAudio) {
         simulation.onBirth = recordBirth;
@@ -906,11 +927,13 @@ function restart(width) {
     }
     hovered = -1;
     planted = -1;
+    fieldWidth.setCustomValidity('');
     fieldWidth.value = width;
     fieldSizeForm.hidden = false;
     resetSpeedSample();
 }
 
+fieldWidth.addEventListener('input', () => fieldWidth.setCustomValidity(''));
 fieldSizeForm.addEventListener('submit', event => {
     event.preventDefault();
     if (!fieldSizeForm.hidden && fieldWidth.validity.valid) restart(fieldWidth.valueAsNumber);
