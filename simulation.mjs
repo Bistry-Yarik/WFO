@@ -16,6 +16,9 @@ const GROWTH_INTERVAL = 1.5;
 const IDLE_RECYCLE_AGE = 30;
 const RECYCLE_CHECK_TICKS = Math.round(1 / STEP);
 const MIN_USEFUL_WORK = 0.01;
+const COLLECTOR_MIN_YIELD = 0.10;
+const WATER_COLLECTOR_RATE = 50;
+const COLLECTOR_TYPES = new Set(['organic', 'energy', 'cleaner']);
 const RECYCLABLE_TYPES = new Set(['organic', 'energy', 'teeth', 'cleaner', 'converter', 'stomach']);
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
@@ -274,11 +277,8 @@ export class Simulation {
         const ground = this[resource];
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
-        const base = 50 * STEP * productionFactor(cell[resource], this.limits);
-        if (base === 0) {
-            cell.lastWorkAge = cell.age;
-            return;
-        }
+        const base = WATER_COLLECTOR_RATE * STEP * productionFactor(cell[resource], this.limits);
+        if (base === 0) return;
         const bonus = resource === 'organic' ? organicBoost(cell, base) : 0;
         let remaining = base + bonus;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
@@ -292,7 +292,7 @@ export class Simulation {
                 remaining -= amount;
             }
         }
-        if (base + bonus - remaining >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
+        this.recordCollection(cell, base + bonus - remaining, base + bonus);
         cell.energy -= Math.max(0, bonus - remaining);
     }
 
@@ -317,9 +317,28 @@ export class Simulation {
             }
         }
         const removed = budget - remaining;
-        if (removed >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
+        this.recordCollection(cell, removed, budget);
         cell.energy += removed * CLEANUP_ENERGY_PER_RADIATION;
         cell.organic += removed * CLEANUP_ORGANIC_PER_RADIATION;
+    }
+
+    recordCollection(cell, amount, capacity) {
+        cell.collected = (cell.collected ?? 0) + amount;
+        cell.collectionCapacity = (cell.collectionCapacity ?? 0) + capacity;
+    }
+
+    shouldRecycle(cell) {
+        if (!COLLECTOR_TYPES.has(cell.type)) return cell.age - cell.lastWorkAge >= IDLE_RECYCLE_AGE;
+
+        if (cell.age - (cell.collectionWindowStart ?? 0) < IDLE_RECYCLE_AGE) return false;
+        const capacity = cell.collectionCapacity ?? 0;
+        const collected = cell.collected ?? 0;
+        cell.collectionWindowStart = cell.age;
+        cell.collectionCapacity = 0;
+        cell.collected = 0;
+        // A collector that spent most of the window throttled by full stores stays useful.
+        return capacity >= WATER_COLLECTOR_RATE * IDLE_RECYCLE_AGE / 2
+            && collected < capacity * COLLECTOR_MIN_YIELD;
     }
 
     diffuse(resource, duration) {
@@ -703,7 +722,7 @@ export class Simulation {
 
     recycleCollection(collection) {
         for (const cell of collection.values()) {
-            if (!RECYCLABLE_TYPES.has(cell.type) || cell.age - cell.lastWorkAge < IDLE_RECYCLE_AGE) continue;
+            if (!RECYCLABLE_TYPES.has(cell.type) || !this.shouldRecycle(cell)) continue;
             const channels = [];
             for (const index of this.neighbors(cell.index)) {
                 const neighbor = this.cells.get(index);
