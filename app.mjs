@@ -1142,7 +1142,7 @@ autoDonate.addEventListener('click', () => {
     simulation.survival.autoDonate = !simulation.survival.autoDonate;
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
-        ? 'Все твои каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
+        ? 'Твои каналы и рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
 });
 survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
 document.querySelector('#save-game').addEventListener('click', () => {

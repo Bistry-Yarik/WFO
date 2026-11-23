@@ -528,7 +528,8 @@ class Simulation {
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return 'Постройте рядом со своим каналом';
         const cost = type === 'seed' ? SEED_COST : type === 'channel' ? CHANNEL_COST : CELL_COST;
-        if (!this.fundPlayerConstruction(channels, cost)) return this.constructionCostMessage(cost);
+        const shortage = this.fundPlayerConstruction(channels, cost);
+        if (shortage) return shortage;
         const parent = channels[0];
         if (type === 'seed') {
             this.placeSeedAt(index, parent.colony, cost);
@@ -549,26 +550,25 @@ class Simulation {
         const channels = THROW_OFFSETS.map(([dx, dy]) => this.cells.get(this.wrappedIndex(x + dx, y + dy)))
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return `В радиусе ${SEED_THROW_RANGE} клеток нет твоего канала`;
-        if (!this.fundPlayerConstruction(channels, THROWN_SEED_COST)) {
-            return this.constructionCostMessage(THROWN_SEED_COST);
-        }
+        const shortage = this.fundPlayerConstruction(channels, THROWN_SEED_COST);
+        if (shortage) return shortage;
         this.placeSeedAt(index, channels[0].colony, THROWN_SEED_COST);
         return '';
-    }
-
-    constructionCostMessage({ energy, organic }) {
-        return `Нужно ⚡ ${energy} / орг. ${organic}. Включи «Авторесурсы» или отметь связанный канал`;
     }
 
     fundPlayerConstruction(channels, cost) {
         const sources = [...channels];
         const visited = new Set(sources);
         if (this.survival.autoDonate) {
-            for (const channel of this.cells.values()) {
-                if (channel.type === 'channel' && channel.colony.family === this.survival.family && !visited.has(channel)) {
-                    sources.push(channel);
+            const collectors = [];
+            for (const collection of [this.cells, this.parasites]) {
+                for (const cell of collection.values()) {
+                    if (cell.colony.family !== this.survival.family || cell.type === 'seed' || visited.has(cell)) continue;
+                    if (cell.type === 'channel') sources.push(cell);
+                    else collectors.push(cell);
                 }
             }
+            for (const cell of collectors) sources.push(cell);
         } else {
             const queue = [...sources];
             for (const channel of queue) {
@@ -586,25 +586,30 @@ class Simulation {
         let remainingEnergy = cost.energy;
         let remainingOrganic = cost.organic;
         const payments = [];
-        for (const channel of sources) {
-            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP * 2));
-            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP * 2));
-            payments.push({ channel, energy, organic });
+        for (const cell of sources) {
+            const energy = Math.min(remainingEnergy, Math.max(0, cell.energy - ENERGY_UPKEEP * STEP * 2));
+            const organic = Math.min(remainingOrganic, Math.max(0, cell.organic - ORGANIC_UPKEEP * STEP * 2));
+            payments.push({ cell, energy, organic });
             remainingEnergy -= energy;
             remainingOrganic -= organic;
             if (!remainingEnergy && !remainingOrganic) break;
         }
         const reserve = this.survival.recovered;
-        if (remainingEnergy > (reserve?.energy ?? 0) || remainingOrganic > (reserve?.organic ?? 0)) return false;
+        const missingEnergy = Math.max(0, remainingEnergy - (reserve?.energy ?? 0));
+        const missingOrganic = Math.max(0, remainingOrganic - (reserve?.organic ?? 0));
+        if (missingEnergy > 1e-9 || missingOrganic > 1e-9) {
+            const hint = this.survival.autoDonate ? '' : ' Можно включить «Авторесурсы».';
+            return `Не хватает ⚡ ${Math.ceil(missingEnergy)} / орг. ${Math.ceil(missingOrganic)} из ⚡ ${cost.energy} / орг. ${cost.organic}.${hint}`;
+        }
         if (reserve) {
-            reserve.energy -= remainingEnergy;
-            reserve.organic -= remainingOrganic;
+            reserve.energy = Math.max(0, reserve.energy - remainingEnergy);
+            reserve.organic = Math.max(0, reserve.organic - remainingOrganic);
         }
-        for (const { channel, energy, organic } of payments) {
-            channel.energy -= energy;
-            channel.organic -= organic;
+        for (const { cell, energy, organic } of payments) {
+            cell.energy -= energy;
+            cell.organic -= organic;
         }
-        return true;
+        return '';
     }
 
     playerCellAt(index) {
@@ -2919,7 +2924,7 @@ autoDonate.addEventListener('click', () => {
     simulation.survival.autoDonate = !simulation.survival.autoDonate;
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
-        ? 'Все твои каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
+        ? 'Твои каналы и рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
 });
 survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
 document.querySelector('#save-game').addEventListener('click', () => {
