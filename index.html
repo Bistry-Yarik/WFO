@@ -2250,7 +2250,8 @@ function updateReadout() {
         const { type, direction, seekRadiation, wormRole } = genome[step];
         const command = wormRole === 'turn' ? 'Поворот семечком' : `${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`;
         channelDetails = ` · Ген ${step + 1}/${genome.length}: ${command}`
-            + (cell.constructionDonor ? ' · Выделяет ресурсы на стройку' : '')
+            + (cell.colony.family === simulation.survival?.family && simulation.survival.autoDonate
+                ? ' · Авторесурсы' : cell.constructionDonor ? ' · Выделяет ресурсы на стройку' : '')
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
@@ -2401,7 +2402,11 @@ function openCellMenu(index) {
         : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
             .map(type => [type, names[type]]);
     if (owned?.type === 'channel') {
-        choices.push(['donate', owned.constructionDonor ? 'Прекратить выделять ресурсы' : 'Выделять ресурсы на стройку']);
+        if (simulation.survival.autoDonate) {
+            cellMenuHint.textContent = 'Авторесурсы включены. Канал уже выделяет запасы на стройку.';
+        } else {
+            choices.push(['donate', owned.constructionDonor ? 'Прекратить выделять ресурсы' : 'Выделять ресурсы на стройку']);
+        }
     }
     if (!owned) choices.push(['throw', 'Бросить семечко · 500⚡ / 75 орг.']);
     cellMenuActions.replaceChildren(...choices.map(([action, label]) => {
