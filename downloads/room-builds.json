@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "files": {
+    "apk": {
+      "size": 1180208,
+      "sha256": "556526eacaa43c2ca8c20dec8a7e0dbd0d2e57e6637fa8d492d5a5b5f19a1c08"
+    },
+    "exe": {
+      "size": 3056640,
+      "sha256": "f527ea4b2ed402f8feb5aeaebd0ab61deb9718b6d2df7c00397fd47f59f87fd1"
+    }
+  }
+}

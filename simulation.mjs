@@ -152,6 +152,7 @@ export class Simulation {
         this.parasiteChannels = new Map();
         this.colonies = new Map();
         this.families = new Set();
+        this.manualFamilies = new Set();
         this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
@@ -859,7 +860,7 @@ export class Simulation {
     }
 
     grow(cell) {
-        if (cell.colony.family === this.survival?.family || cell.colony.thirsty) return;
+        if (cell.colony.family === this.survival?.family || this.manualFamilies.has(cell.colony.family) || cell.colony.thirsty) return;
         const command = cell.colony.genome[cell.gene % cell.colony.genome.length];
         if (command.wormRole) {
             this.growWorm(cell, command);
@@ -955,7 +956,7 @@ export class Simulation {
 
     recycleCollection(collection) {
         for (const cell of collection.values()) {
-            if (cell.colony.family === this.survival?.family) continue;
+            if (cell.colony.family === this.survival?.family || this.manualFamilies.has(cell.colony.family)) continue;
             if (!RECYCLABLE_TYPES.has(cell.type) || !this.shouldRecycle(cell)) continue;
             const channels = [];
             for (const index of this.neighbors(cell.index)) {

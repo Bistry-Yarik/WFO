@@ -20,8 +20,8 @@ if [[ -n "${WFO_ECJ_JAR:-}" ]]; then
 else
     javac --release 8 -classpath "$platform" -d "$build/classes" android/MainActivity.java
 fi
-"$build_tools/d8" --lib "$platform" --min-api 23 --output "$build/dex" \
-    "$build/classes/com/bistryyarik/wfo/MainActivity.class"
+mapfile -d '' classes < <(find "$build/classes" -name '*.class' -print0)
+"$build_tools/d8" --lib "$platform" --min-api 23 --output "$build/dex" "${classes[@]}"
 "$build_tools/aapt" package -M android/AndroidManifest.xml -S android/res \
     -A "$build/assets" -I "$platform" -F "$build/unsigned.apk"
 zip -jq "$build/unsigned.apk" "$build/dex/classes.dex"

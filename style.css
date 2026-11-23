@@ -189,3 +189,21 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .toolbar #pause { width: 8.5em; }
 .toolbar #fullscreen { width: 13em; }
 #auto-donate[aria-pressed="true"] { background: #306443; }
+
+#save-library, #server-dialog {
+    width: min(440px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    color: inherit;
+    background: #182720;
+    border: 1px solid #415a4d;
+    border-radius: 10px;
+    padding: 16px;
+}
+#save-library::backdrop, #server-dialog::backdrop { background: #08130db3; }
+#save-list { display: grid; gap: 8px; margin-top: 10px; }
+#save-list button { display: flex; gap: 12px; align-items: center; text-align: left; }
+#save-list img { width: min(32vw, 144px); border-radius: 4px; }
+#save-list span { white-space: pre-line; }
+#server-dialog > label { display: grid; gap: 5px; margin-top: 10px; }
+#server-dialog form { margin-top: 8px; }
+#server-downloads a { display: block; color: #a4ecc0; }

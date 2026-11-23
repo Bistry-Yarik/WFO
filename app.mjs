@@ -1,4 +1,4 @@
-import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, ENERGY_RESOURCE, ORGANIC_RESOURCE, RADIATION_RESOURCE } from './simulation.mjs';
+import { Simulation, STEP, DEFAULT_LIMITS, DIRECTIONS, TYPES, ENERGY_RESOURCE, ORGANIC_RESOURCE, RADIATION_RESOURCE } from './simulation.mjs';
 import { WorldAudio } from './audio.mjs';
 
 const field = document.querySelector('#field');
@@ -547,7 +547,7 @@ function indexAt(event) {
 
 function plant(index) {
     const { width } = simulation;
-    if (index < 0 || simulation.survival) return;
+    if (index < 0 || simulation.survival || (roomPeer && !roomHost)) return;
     hovered = index;
     if (simulation.plantSeedPack(index % width, Math.floor(index / width), seedPack.value, Number(seedRadius.value))) {
         planted = index;
@@ -559,7 +559,7 @@ function plant(index) {
 }
 
 function paintStroke(fromX, fromY, event, tool, visited) {
-    if (simulation.survival) return;
+    if (simulation.survival || (roomPeer && !roomHost)) return;
     const rect = field.getBoundingClientRect();
     const inverse = viewMatrix().inverse();
     const toMap = (x, y) => inverse.transformPoint({
@@ -648,8 +648,11 @@ function openCellMenu(index) {
             });
         }
         button.addEventListener('click', () => {
-            const error = action === 'throw' ? simulation.throwPlayerSeed(index)
-                : owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
+            const error = playerAction(action, index);
+            if (error === null) {
+                cellMenu.close();
+                return;
+            }
             if (error) {
                 cellMenuStatus.textContent = error;
                 return;
@@ -691,6 +694,10 @@ cellMenu.addEventListener('close', () => {
 function useMapTool(event) {
     const index = indexAt(event);
     if (index < 0) return;
+    if (possessing) {
+        possessFamily(index);
+        return;
+    }
     if (simulation.survival) {
         if (simulation.survival.lost) return;
         hovered = index;
@@ -752,7 +759,7 @@ if ('PointerEvent' in window) {
         const rotating = rotationEnabled.checked && event.button === 1 && event.pointerType === 'mouse';
         if (!event.isPrimary || (!canPlant && !rightDrag && !rotating)) return;
         if (rotating) event.preventDefault();
-        const paintTool = canPlant && !simulation.survival && mapTool.value !== 'seed' ? mapTool.value : null;
+        const paintTool = canPlant && !possessing && !simulation.survival && mapTool.value !== 'seed' ? mapTool.value : null;
         press = { id: event.pointerId, x: event.clientX, y: event.clientY,
             dragging: rightDrag || rotating, canPlant, rotating, paintTool,
             visited: paintTool ? new Set() : null };
@@ -1058,7 +1065,7 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
     if (deleting) {
         if (!simulation.playerCellAt(index)) return;
-        if (simulation.managePlayerCell(index, 'delete')) return;
+        if (playerAction('delete', index) !== '') return;
         gameStatus.textContent = 'Клетка удалена';
         if (simulation.survival.lost) setPaused(true);
         updateGameControls();
@@ -1069,7 +1076,8 @@ window.addEventListener('keydown', event => {
     }
     const nearby = simulation.neighbors(index).some(site => simulation.playerCellAt(site)?.type === 'channel');
     const thrown = type === 'seed' && !nearby;
-    const error = thrown ? simulation.throwPlayerSeed(index) : simulation.buildPlayerCell(index, type);
+    const error = playerAction(thrown ? 'throw' : type, index);
+    if (error === null) return;
     gameStatus.textContent = error || (thrown ? 'Семечко брошено' : type === 'seed' ? 'Семечко посажено' : 'Клетка построена');
     hovered = index;
     draw();
@@ -1109,13 +1117,20 @@ function applyGame(nextSimulation) {
 
 function updateGameControls() {
     const survival = simulation.survival;
+    const guest = roomPeer && !roomHost;
+    speed.disabled = Boolean(guest);
+    survivalMode.disabled = Boolean(guest);
+    possessButton.hidden = !roomHost;
+    document.querySelector('#reset').disabled = Boolean(roomPeer);
+    if (roomPeer) fieldSizeForm.hidden = true;
     autoDonate.hidden = !survival;
     autoDonate.disabled = Boolean(survival?.lost);
     autoDonate.setAttribute('aria-pressed', String(Boolean(survival?.autoDonate)));
-    survivalMode.textContent = survival ? 'Вернуться в песочницу' : 'Начать выживание';
+    survivalMode.textContent = survival ? 'Вернуться в песочницу'
+        : roomHost ? 'Выбрать водоросль' : 'Начать выживание';
     for (const input of [seedPack, seedRadius, mapTool]) input.closest('label').hidden = Boolean(survival);
     plantButton.hidden = Boolean(survival);
-    pause.disabled = Boolean(survival?.lost);
+    pause.disabled = Boolean(guest || (survival?.lost && !roomHost));
     if (survival?.lost) gameStatus.textContent = 'Поражение. Твои клетки и семечки погибли';
 }
 
@@ -1157,44 +1172,535 @@ function restart(width, survival = Boolean(simulation.survival)) {
 
 autoDonate.addEventListener('click', () => {
     simulation.survival.autoDonate = !simulation.survival.autoDonate;
+    if (roomPeer && !roomHost) hostConnection?.send({ kind: 'autoDonate', enabled: simulation.survival.autoDonate });
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
         ? 'Твои каналы и рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
 });
-survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
-document.querySelector('#save-game').addEventListener('click', () => {
-    try {
-        localStorage.setItem(GAME_SAVE_KEY, JSON.stringify({ game: simulation.createSave(), camera, speed: speed.value }));
-        gameStatus.textContent = 'Партия сохранена на этом устройстве';
-    } catch {
-        gameStatus.textContent = 'Сохранить не удалось. Возможно, хранилище заполнено или недоступно';
+survivalMode.addEventListener('click', () => {
+    if (!roomHost) {
+        if (!roomPeer) restart(simulation.width, !simulation.survival);
+    } else if (simulation.survival) {
+        simulation.survival = null;
+        updateGameControls();
+        gameStatus.textContent = 'Включена песочница на сервере';
+    } else {
+        possessButton.click();
     }
 });
-document.querySelector('#load-game').addEventListener('click', () => {
-    try {
-        const saved = JSON.parse(localStorage.getItem(GAME_SAVE_KEY));
-        if (!saved) {
-            gameStatus.textContent = 'Сохранённой партии пока нет';
+const ROOM_VERSION = 1;
+const serverDialog = document.querySelector('#server-dialog');
+const serverStatus = document.querySelector('#server-status');
+const serverCode = document.querySelector('#server-code');
+const serverDownloads = document.querySelector('#server-downloads');
+const possessButton = document.querySelector('#possess-family');
+let roomPeer = null;
+let roomCode = null;
+let roomHost = false;
+let hostConnection = null;
+let possessing = false;
+let snapshotBusy = false;
+let lastSnapshot = 0;
+let receivedSnapshot = 0;
+const roomGuests = new Map();
+
+const ROOM_DOWNLOAD_ROOT = 'https://raw.githubusercontent.com/Bistry-Yarik/WFO/main/downloads/';
+const UPDATE_CHUNK_SIZE = 64 * 1024;
+const UPDATE_MAX_SIZE = 24 * 1024 * 1024;
+const incomingUpdates = new Map();
+const outgoingUpdates = new Set();
+const roomPeerVersions = new Map();
+
+async function publishedFiles() {
+    const response = await fetch(ROOM_DOWNLOAD_ROOT + 'room-builds.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Manifest unavailable');
+    return response.json();
+}
+
+async function verifyUpdate(bytes, expectedHash) {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    return Array.from(digest, value => value.toString(16).padStart(2, '0')).join('') === expectedHash;
+}
+
+function receiveRoomUpdate(connection, packet) {
+    const receiving = incomingUpdates.get(connection);
+    if (!receiving || packet.extension !== receiving.extension) return;
+    if (packet.kind === 'update-error') {
+        incomingUpdates.delete(connection);
+        showServerStatus('Передача с компьютера игрока недоступна. Используйте прямую ссылку.');
+        return;
+    }
+    if (packet.kind === 'update-chunk') {
+        const bytes = packet.bytes;
+        if (!(bytes instanceof ArrayBuffer) || bytes.byteLength > UPDATE_CHUNK_SIZE
+                || receiving.size + bytes.byteLength > receiving.file.size) {
+            incomingUpdates.delete(connection);
+            showServerStatus('Передача прервана: неверный размер файла');
             return;
         }
-        if (!validLimits(saved.game.limits)
-                || !['x', 'y', 'zoom', 'angle'].every(key => Number.isFinite(saved.camera[key]))
-                || !Array.from(speed.options).some(option => option.value === saved.speed)) {
-            throw new Error('Invalid save');
+        receiving.size += bytes.byteLength;
+        receiving.chunks.push(bytes);
+        return;
+    }
+    incomingUpdates.delete(connection);
+    const blob = new Blob(receiving.chunks, { type: 'application/octet-stream' });
+    void (async () => {
+        if (blob.size !== receiving.file.size || !(await verifyUpdate(await blob.arrayBuffer(), receiving.file.sha256))) {
+            showServerStatus('Переданный файл не прошёл проверку подлинности');
+            return;
         }
-        const world = Simulation.fromSave(saved.game, Math.random, recordDeath);
-        if (world.width !== simulation.width) configureWorldCanvas(world);
-        applyGame(world);
-        setZoom(saved.camera.zoom);
-        Object.assign(camera, { x: saved.camera.x, y: saved.camera.y, angle: saved.camera.angle });
-        resetAngle.disabled = camera.angle === 0;
-        speed.value = saved.speed;
-        setPaused(true);
-        if (!world.survival?.lost) gameStatus.textContent = 'Партия загружена. Нажмите «Продолжить»';
-        draw();
-        updateReadout();
+        const link = document.createElement('a');
+        const address = URL.createObjectURL(blob);
+        link.href = address;
+        link.download = `WFO.${receiving.extension}`;
+        link.textContent = `Сохранить проверенный ${receiving.extension.toUpperCase()}`;
+        if (window.WfoAndroid?.saveVerifiedBuild) {
+            link.addEventListener('click', event => {
+                event.preventDefault();
+                const reader = new FileReader();
+                reader.onload = () => window.WfoAndroid.saveVerifiedBuild(receiving.extension, reader.result.split(',')[1]);
+                reader.readAsDataURL(blob);
+            });
+        } else {
+            link.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(address), 30000), { once: true });
+        }
+        serverDownloads.append(link);
+        showServerStatus('Сборка с компьютера игрока получена и проверена');
+    })().catch(() => showServerStatus('Не удалось проверить полученную сборку'));
+}
+
+async function sendRoomUpdate(connection, packet) {
+    const { extension } = packet;
+    if (!['exe', 'apk'].includes(extension) || outgoingUpdates.has(connection)) return;
+    outgoingUpdates.add(connection);
+    try {
+        const manifest = await publishedFiles();
+        if (manifest.version !== ROOM_VERSION) throw new Error('Version unavailable');
+        const file = manifest.files[extension];
+        const response = await fetch(ROOM_DOWNLOAD_ROOT + `WFO.${extension}`);
+        if (!response.ok) throw new Error('Build unavailable');
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== file.size || bytes.byteLength > UPDATE_MAX_SIZE
+                || !(await verifyUpdate(bytes, file.sha256))) throw new Error('Invalid build');
+        for (let offset = 0; offset < bytes.byteLength; offset += UPDATE_CHUNK_SIZE) {
+            while (connection.open && (connection.bufferSize > 4 || connection.dataChannel.bufferedAmount > 512 * 1024)) {
+                await new Promise(resolve => setTimeout(resolve, 40));
+            }
+            if (!connection.open) return;
+            connection.send({ kind: 'update-chunk', extension, bytes: bytes.slice(offset, offset + UPDATE_CHUNK_SIZE) });
+        }
+        connection.send({ kind: 'update-done', extension });
     } catch {
-        gameStatus.textContent = 'Загрузить сохранение не удалось';
+        if (connection.open) connection.send({ kind: 'update-error', extension });
+    } finally {
+        outgoingUpdates.delete(connection);
+    }
+}
+
+function handleUpdatePacket(connection, packet) {
+    if (packet?.kind === 'update-request') {
+        const version = roomPeerVersions.get(connection);
+        if (version < ROOM_VERSION) void sendRoomUpdate(connection, packet);
+    } else if (['update-chunk', 'update-done', 'update-error'].includes(packet?.kind)) {
+        receiveRoomUpdate(connection, packet);
+    } else return false;
+    return true;
+}
+
+function showServerStatus(message) {
+    serverStatus.textContent = message;
+    gameStatus.textContent = message;
+}
+
+function showVersionMismatch(version, connection) {
+    showServerStatus(version > ROOM_VERSION
+        ? 'У другого игрока версия новее. Обновите WFO перед подключением.'
+        : 'У другого игрока версия старее. Ему нужно обновить WFO.');
+    serverDownloads.replaceChildren();
+    for (const extension of ['EXE', 'APK']) {
+        const link = document.createElement('a');
+        link.href = `https://raw.githubusercontent.com/Bistry-Yarik/WFO/main/downloads/WFO.${extension.toLowerCase()}`;
+        link.textContent = `Скачать актуальный ${extension}`;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        serverDownloads.append(link);
+        if (version <= ROOM_VERSION || !crypto.subtle) continue;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Получить ${extension} от игрока`;
+        button.addEventListener('click', async () => {
+            const format = extension.toLowerCase();
+            try {
+                if (!connection.open || incomingUpdates.has(connection)) throw new Error('Transfer unavailable');
+                const manifest = await publishedFiles();
+                const file = manifest.files[format];
+                if (manifest.version !== version || file.size > UPDATE_MAX_SIZE) throw new Error('Version unavailable');
+                incomingUpdates.set(connection, { extension: format, file, size: 0, chunks: [] });
+                connection.send({ kind: 'update-request', extension: format });
+                showServerStatus('Получение сборки от игрока…');
+            } catch {
+                showServerStatus('Эта сборка недоступна для передачи. Можно открыть прямую ссылку.');
+            }
+        });
+        serverDownloads.append(button);
+    }
+    if (!serverDialog.open) serverDialog.showModal();
+}
+
+function closeRoom() {
+    const peer = roomPeer;
+    roomPeer = null;
+    roomHost = false;
+    hostConnection = null;
+    roomGuests.clear();
+    incomingUpdates.clear();
+    roomPeerVersions.clear();
+    simulation.manualFamilies.clear();
+    roomCode = null;
+    possessing = false;
+    receivedSnapshot = 0;
+    peer?.destroy();
+    updateGameControls();
+}
+
+function playerAction(action, index) {
+    if (roomPeer && !roomHost) {
+        if (!hostConnection?.open) return 'Соединение с сервером закрыто';
+        hostConnection.send({ kind: 'action', action, index });
+        return null;
+    }
+    return executePlayerAction(action, index);
+}
+
+function executePlayerAction(action, index) {
+    if (action === 'throw') return simulation.throwPlayerSeed(index);
+    if (['delete', 'boost', 'donate'].includes(action)) return simulation.managePlayerCell(index, action);
+    return simulation.buildPlayerCell(index, action);
+}
+
+function guestSurvival() {
+    for (let attempt = 0; attempt < 64; attempt++) {
+        const index = Math.floor(Math.random() * simulation.energy.length);
+        if (simulation.cells.has(index) || !simulation.isSeedSiteSafe(index)) continue;
+        if (!simulation.seed(index % simulation.width, Math.floor(index / simulation.width))) continue;
+        const family = simulation.cells.get(index).colony.family;
+        simulation.manualFamilies.add(family);
+        return { family, nextSpawn: Number.MAX_SAFE_INTEGER, lost: false };
+    }
+    return null;
+}
+
+function receiveGuest(connection, packet) {
+    if (handleUpdatePacket(connection, packet)) return;
+    if (packet?.kind === 'hello' && !roomGuests.has(connection)) {
+        if (!Number.isSafeInteger(packet.version) || roomPeerVersions.has(connection)) return;
+        roomPeerVersions.set(connection, packet.version);
+        if (packet.version !== ROOM_VERSION) {
+            connection.send({ kind: 'version', version: ROOM_VERSION });
+            showVersionMismatch(packet.version, connection);
+            return;
+        }
+        const guest = guestSurvival();
+        if (!guest) {
+            connection.send({ kind: 'result', error: 'Нет безопасного места для стартового семечка' });
+            return;
+        }
+        roomGuests.set(connection, guest);
+        connection.send({ kind: 'accepted' });
+        showServerStatus(`Сервер ${roomCode} · игроков: ${roomGuests.size + 1}`);
+        return;
+    }
+    const guest = roomGuests.get(connection);
+    if (!guest || guest.lost) return;
+    if (packet?.kind === 'autoDonate') {
+        guest.autoDonate = packet.enabled === true;
+        return;
+    }
+    if (packet?.kind !== 'action' || !Number.isSafeInteger(packet.index)
+            || packet.index < 0 || packet.index >= simulation.energy.length
+            || !['throw', 'delete', 'boost', 'donate', ...TYPES].includes(packet.action)) return;
+    const host = simulation.survival;
+    let error;
+    try {
+        simulation.survival = guest;
+        error = executePlayerAction(packet.action, packet.index);
+    } finally {
+        simulation.survival = host;
+    }
+    connection.send({ kind: 'result', error });
+}
+
+async function broadcastRoom(now) {
+    if (!roomHost || !roomGuests.size || snapshotBusy || now - lastSnapshot < 750) return;
+    lastSnapshot = now;
+    snapshotBusy = true;
+    try {
+        const text = JSON.stringify(simulation.createSave());
+        const payload = await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+        for (const [connection, guest] of roomGuests) {
+            if (!connection.open || connection.bufferSize > 2) continue;
+            guest.lost ||= !simulation.families.has(guest.family);
+            connection.send({ kind: 'state', payload, guest, speed: speed.value, sequence: now });
+        }
+    } catch {
+        showServerStatus('Не удалось отправить состояние карты');
+    } finally {
+        snapshotBusy = false;
+    }
+}
+
+async function receiveHost(connection, packet) {
+    if (connection !== hostConnection || handleUpdatePacket(connection, packet)) return;
+    if (packet?.kind === 'version' && Number.isSafeInteger(packet.version)) {
+        roomPeerVersions.set(connection, packet.version);
+        showVersionMismatch(packet.version, connection);
+    } else if (packet?.kind === 'accepted') {
+        showServerStatus(`Подключено к серверу ${roomCode}`);
+    } else if (packet?.kind === 'result') {
+        gameStatus.textContent = packet.error || 'Действие выполнено';
+    } else if (packet?.kind === 'state') {
+        try {
+            const payload = new Blob([packet.payload]).stream().pipeThrough(new DecompressionStream('gzip'));
+            const save = JSON.parse(await new Response(payload).text());
+            if (connection !== hostConnection || packet.sequence <= receivedSnapshot) return;
+            const world = Simulation.fromSave(save, Math.random, recordDeath);
+            world.survival = packet.guest;
+            if (world.width !== simulation.width) configureWorldCanvas(world);
+            simulation = world;
+            receivedSnapshot = packet.sequence;
+            speed.value = packet.speed;
+            fieldSizeForm.hidden = true;
+            updateGameControls();
+            draw();
+        } catch {
+            showServerStatus('Не удалось загрузить состояние сервера');
+        }
+    }
+}
+
+function openRoom(hosting) {
+    const code = serverCode.value.trim().toLowerCase();
+    if (!/^[a-z.]{10}$/.test(code)) {
+        showServerStatus('Введите ровно 10 английских букв или точек');
+        return;
+    }
+    if (roomPeer) {
+        showServerStatus('Сначала выйдите из текущей комнаты');
+        return;
+    }
+    if (!window.Peer || !window.CompressionStream || !window.DecompressionStream) {
+        showServerStatus('В этой версии браузера сетевой режим недоступен');
+        return;
+    }
+    const id = 'wfo-room-' + Array.from(code, character => character.charCodeAt(0).toString(16)).join('');
+    const peer = hosting ? new window.Peer(id, { secure: true }) : new window.Peer({ secure: true });
+    roomPeer = peer;
+    roomCode = code;
+    roomHost = hosting;
+    serverDownloads.replaceChildren();
+    showServerStatus('Подключение…');
+    updateGameControls();
+    peer.on('open', () => {
+        if (roomPeer !== peer) return;
+        if (hosting) {
+            speed.value = '1';
+            resetSpeedSample();
+            setPaused(false);
+            showServerStatus(`Сервер ${code} создан · игроков: 1`);
+            return;
+        }
+        const connection = peer.connect(id, { reliable: true });
+        hostConnection = connection;
+        connection.on('open', () => connection.send({ kind: 'hello', version: ROOM_VERSION }));
+        connection.on('data', packet => receiveHost(connection, packet));
+        connection.on('close', () => {
+            if (connection !== hostConnection) return;
+            closeRoom();
+            setPaused(true);
+            showServerStatus('Связь с сервером закрыта');
+        });
+        connection.on('error', () => showServerStatus('Ошибка прямого соединения'));
+        setTimeout(() => {
+            if (hostConnection !== connection || connection.open) return;
+            closeRoom();
+            showServerStatus('Прямое соединение не установилось. Проверьте код и сеть.');
+        }, 20000);
+    });
+    peer.on('connection', connection => {
+        if (!hosting) {
+            connection.close();
+            return;
+        }
+        connection.on('data', packet => receiveGuest(connection, packet));
+        connection.on('close', () => {
+            incomingUpdates.delete(connection);
+            roomPeerVersions.delete(connection);
+            const guest = roomGuests.get(connection);
+            if (!guest) return;
+            simulation.manualFamilies.delete(guest.family);
+            roomGuests.delete(connection);
+            if (roomPeer === peer) showServerStatus(`Сервер ${code} · игроков: ${roomGuests.size + 1}`);
+        });
+    });
+    peer.on('error', error => {
+        if (roomPeer !== peer) return;
+        showServerStatus(error.type === 'unavailable-id' ? 'Этот код уже занят'
+            : error.type === 'peer-unavailable' ? 'Сервер с таким кодом не найден' : 'Подключение не удалось');
+        closeRoom();
+    });
+}
+
+document.querySelector('#server-menu').addEventListener('click', () => serverDialog.showModal());
+document.querySelector('#host-server').addEventListener('click', () => openRoom(true));
+document.querySelector('#join-server').addEventListener('click', () => openRoom(false));
+document.querySelector('#leave-server').addEventListener('click', () => {
+    closeRoom();
+    setPaused(true);
+    showServerStatus('Вы вышли с сервера');
+});
+possessButton.addEventListener('click', () => {
+    possessing = !possessing;
+    possessButton.setAttribute('aria-pressed', String(possessing));
+    gameStatus.textContent = possessing ? 'Выбери на карте водоросль без игрока' : '';
+});
+
+function possessFamily(index) {
+    const cell = simulation.cells.get(index);
+    if (!cell || simulation.manualFamilies.has(cell.colony.family)) {
+        gameStatus.textContent = 'Нужна водоросль без игрока';
+        return;
+    }
+    simulation.survival = { family: cell.colony.family, nextSpawn: simulation.time + 35, lost: false };
+    possessing = false;
+    possessButton.setAttribute('aria-pressed', 'false');
+    updateGameControls();
+    gameStatus.textContent = 'Теперь ты управляешь выбранной водорослью';
+}
+
+const saveLibrary = document.querySelector('#save-library');
+const saveList = document.querySelector('#save-list');
+const saveLibraryStatus = document.querySelector('#save-library-status');
+let saveDatabase;
+
+function openSaveDatabase() {
+    saveDatabase ??= new Promise((resolve, reject) => {
+        const request = indexedDB.open('wfo-saves', 1);
+        request.onupgradeneeded = () => request.result.createObjectStore('games', { keyPath: 'id' });
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    return saveDatabase;
+}
+
+async function saveStore(mode, operation) {
+    const db = await openSaveDatabase();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction('games', mode);
+        const request = operation(transaction.objectStore('games'));
+        transaction.oncomplete = () => resolve(request.result);
+        transaction.onabort = () => reject(transaction.error);
+    });
+}
+
+function makeSave(saved, id, savedAt = null) {
+    const { game } = saved;
+    const preview = document.createElement('canvas');
+    preview.width = 144;
+    preview.height = 92;
+    const ctx = preview.getContext('2d');
+    const { width, limits } = game;
+    const height = game.energy.length / width;
+    const cells = new Map(game.cells.map(cell => [cell.index, cell]));
+    const colonies = new Map(game.colonies.map(colony => [colony.id, colony.hue]));
+    for (let y = 0; y < preview.height; y++) {
+        for (let x = 0; x < preview.width; x++) {
+            const index = Math.floor(y * height / preview.height) * width + Math.floor(x * width / preview.width);
+            const cell = cells.get(index);
+            if (cell) {
+                const color = overviewColors[cell.type];
+                ctx.fillStyle = color ? `rgb(${color.join(' ')})` : `hsl(${colonies.get(cell.colony)} 78% 67%)`;
+            } else {
+                const channel = (stock, scale) => Math.min(1, stock / scale);
+                ctx.fillStyle = `rgb(${20 + 145 * channel(game.organic[index], limits.soil)} ${25 + 155 * channel(game.radiation[index], 1000)} ${22 + 165 * channel(game.energy[index], limits.soil)})`;
+            }
+            ctx.fillRect(x, y, 1, 1);
+        }
+    }
+    return { ...saved, id, savedAt, preview: preview.toDataURL(), room: saved.room ?? null };
+}
+
+function loadSavedGame(saved) {
+    if (roomPeer) throw new Error('Leave the active server before loading');
+    if (!validLimits(saved.game.limits)
+            || !['x', 'y', 'zoom', 'angle'].every(key => Number.isFinite(saved.camera[key]))
+            || !Array.from(speed.options).some(option => option.value === saved.speed)) {
+        throw new Error('Invalid save');
+    }
+    const world = Simulation.fromSave(saved.game, Math.random, recordDeath);
+    if (world.width !== simulation.width) configureWorldCanvas(world);
+    applyGame(world);
+    setZoom(saved.camera.zoom);
+    Object.assign(camera, { x: saved.camera.x, y: saved.camera.y, angle: saved.camera.angle });
+    resetAngle.disabled = camera.angle === 0;
+    speed.value = saved.speed;
+    setPaused(true);
+    if (!world.survival?.lost) gameStatus.textContent = 'Партия загружена. Нажмите «Продолжить»';
+    if (saved.room) document.querySelector('#server-code').value = saved.room;
+    draw();
+    updateReadout();
+}
+
+document.querySelector('#save-game').addEventListener('click', async () => {
+    try {
+        const saved = { game: simulation.createSave(), camera: { ...camera }, speed: speed.value, room: roomCode };
+        await saveStore('readwrite', store => store.add(makeSave(saved, crypto.randomUUID?.() ?? String(Date.now()), Date.now())));
+        gameStatus.textContent = 'Партия добавлена в сохранения';
+    } catch {
+        gameStatus.textContent = 'Не удалось сохранить партию на этом устройстве';
+    }
+});
+
+document.querySelector('#load-game').addEventListener('click', async () => {
+    saveList.replaceChildren();
+    saveLibraryStatus.textContent = 'Загрузка…';
+    saveLibrary.showModal();
+    let entries = [];
+    try {
+        entries = await saveStore('readonly', store => store.getAll());
+    } catch {
+        saveLibraryStatus.textContent = 'Хранилище сохранений недоступно';
+    }
+    try {
+        const legacy = JSON.parse(localStorage.getItem(GAME_SAVE_KEY));
+        if (legacy) entries.push(makeSave(legacy, 'legacy'));
+    } catch {
+        // The save list is still available if an old local save cannot be read.
+    }
+    if (!entries.length) {
+        if (saveLibraryStatus.textContent === 'Загрузка…') saveLibraryStatus.textContent = 'Сохранений пока нет';
+        return;
+    }
+    saveLibraryStatus.textContent = '';
+    for (const saved of entries.sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0))) {
+        const button = document.createElement('button');
+        const image = document.createElement('img');
+        image.src = saved.preview;
+        image.alt = 'Миниатюра карты';
+        const label = document.createElement('span');
+        const mode = saved.game.survival ? 'Выживание' : 'Песочница';
+        const location = saved.room ? `Сервер · ${saved.room}` : 'Одиночная игра';
+        const time = saved.savedAt ? new Date(saved.savedAt).toLocaleString('ru') : 'Старое сохранение';
+        label.textContent = `${mode}\n${location}\n${time}`;
+        button.append(image, label);
+        button.addEventListener('click', () => {
+            try {
+                loadSavedGame(saved);
+                saveLibrary.close();
+            } catch {
+                saveLibraryStatus.textContent = roomPeer ? 'Сначала выйдите с сервера' : 'Не удалось загрузить карту';
+            }
+        });
+        saveList.append(button);
     }
 });
 
@@ -1220,7 +1726,7 @@ function runSimulationSlice(multiplier) {
     const deadline = now + slice;
     while (elapsed >= STEP && performance.now() < deadline) {
         simulation.tick();
-        if (simulation.survival?.lost) {
+        if (simulation.survival?.lost && !roomHost) {
             setPaused(true);
             updateGameControls();
             return;
@@ -1236,7 +1742,7 @@ function runSimulationSlice(multiplier) {
 simulationTasks.port1.onmessage = () => {
     simulationTaskPending = false;
     const multiplier = Number(speed.value);
-    if (!paused && !document.hidden && multiplier >= continuousSpeed()) runSimulationSlice(multiplier);
+    if (!paused && (!roomPeer || roomHost) && !document.hidden && multiplier >= continuousSpeed()) runSimulationSlice(multiplier);
 };
 
 function frame(now) {
@@ -1247,10 +1753,11 @@ function frame(now) {
         moveCameraByScreen(dx * distance, dy * distance);
     }
     const multiplier = Number(speed.value);
-    if (!paused && !document.hidden && !simulationTaskPending) {
+    if (!paused && (!roomPeer || roomHost) && !document.hidden && !simulationTaskPending) {
         runSimulationSlice(multiplier);
     }
     previous = now;
+    if (roomHost) broadcastRoom(now);
     worldAudio?.update(now, simulation, camera, field);
     if (!paused && now - speedSampleAt >= 750) {
         const measured = (simulation.time - speedSampleTime) * 1000 / (now - speedSampleAt);
