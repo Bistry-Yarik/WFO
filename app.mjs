@@ -1834,7 +1834,48 @@ document.querySelector('#load-game').addEventListener('click', async () => {
                 saveLibraryStatus.textContent = roomPeer ? 'Сначала выйдите с сервера' : 'Не удалось загрузить карту';
             }
         });
-        saveList.append(button);
+        const row = document.createElement('div');
+        row.className = 'save-entry';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Удалить';
+        remove.setAttribute('aria-label', `Удалить сохранение: ${mode}, ${time}`);
+        const confirmation = document.createElement('div');
+        confirmation.className = 'save-confirmation';
+        confirmation.hidden = true;
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.textContent = 'Да, удалить';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Отмена';
+        remove.addEventListener('click', () => {
+            confirmation.hidden = false;
+            remove.hidden = true;
+            cancel.focus();
+        });
+        cancel.addEventListener('click', () => {
+            confirmation.hidden = true;
+            remove.hidden = false;
+            remove.focus();
+        });
+        confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            cancel.disabled = true;
+            try {
+                if (saved.id === 'legacy') localStorage.removeItem(GAME_SAVE_KEY);
+                else await saveStore('readwrite', store => store.delete(saved.id));
+                row.remove();
+                saveLibraryStatus.textContent = saveList.children.length ? 'Сохранение удалено' : 'Сохранений пока нет';
+            } catch {
+                saveLibraryStatus.textContent = 'Не удалось удалить сохранение';
+                confirm.disabled = false;
+                cancel.disabled = false;
+            }
+        });
+        confirmation.append(confirm, cancel);
+        row.append(button, remove, confirmation);
+        saveList.append(row);
     }
 });
 

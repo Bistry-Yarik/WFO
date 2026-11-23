@@ -207,3 +207,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #server-dialog > label { display: grid; gap: 5px; margin-top: 10px; }
 #server-dialog form { margin-top: 8px; }
 #server-downloads a { display: block; color: #a4ecc0; }
+
+.save-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.save-confirmation { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
+#save-list [hidden] { display: none; }

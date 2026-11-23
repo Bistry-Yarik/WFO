@@ -214,6 +214,10 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #server-dialog > label { display: grid; gap: 5px; margin-top: 10px; }
 #server-dialog form { margin-top: 8px; }
 #server-downloads a { display: block; color: #a4ecc0; }
+
+.save-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.save-confirmation { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
+#save-list [hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -3710,7 +3714,48 @@ document.querySelector('#load-game').addEventListener('click', async () => {
                 saveLibraryStatus.textContent = roomPeer ? 'Сначала выйдите с сервера' : 'Не удалось загрузить карту';
             }
         });
-        saveList.append(button);
+        const row = document.createElement('div');
+        row.className = 'save-entry';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Удалить';
+        remove.setAttribute('aria-label', `Удалить сохранение: ${mode}, ${time}`);
+        const confirmation = document.createElement('div');
+        confirmation.className = 'save-confirmation';
+        confirmation.hidden = true;
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.textContent = 'Да, удалить';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Отмена';
+        remove.addEventListener('click', () => {
+            confirmation.hidden = false;
+            remove.hidden = true;
+            cancel.focus();
+        });
+        cancel.addEventListener('click', () => {
+            confirmation.hidden = true;
+            remove.hidden = false;
+            remove.focus();
+        });
+        confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            cancel.disabled = true;
+            try {
+                if (saved.id === 'legacy') localStorage.removeItem(GAME_SAVE_KEY);
+                else await saveStore('readwrite', store => store.delete(saved.id));
+                row.remove();
+                saveLibraryStatus.textContent = saveList.children.length ? 'Сохранение удалено' : 'Сохранений пока нет';
+            } catch {
+                saveLibraryStatus.textContent = 'Не удалось удалить сохранение';
+                confirm.disabled = false;
+                cancel.disabled = false;
+            }
+        });
+        confirmation.append(confirm, cancel);
+        row.append(button, remove, confirmation);
+        saveList.append(row);
     }
 });
 
