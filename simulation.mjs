@@ -1087,7 +1087,6 @@ export class Simulation {
             const neighbor = channels && this.nearestParasiteChannel(parasite, channels);
             if (!neighbor) continue;
             this.parasiteChannels.set(parasite, neighbor);
-            this.transfers.push({ cell: parasite, neighbor, energy: 0, organic: 0 });
         }
     }
 
@@ -1228,6 +1227,25 @@ export class Simulation {
             neighbor.organic += organic;
         }
 
+        // Parasite loot is delivered in full. The receiving channel pays its upkeep.
+        const supportedParasites = parasites && new Set();
+        if (parasites) {
+            const energyUpkeep = ENERGY_UPKEEP * STEP;
+            const organicUpkeep = ORGANIC_UPKEEP * STEP;
+            for (const parasite of parasites.values()) {
+                const channel = this.parasiteChannels.get(parasite);
+                if (!channel || overloaded.has(parasite.colony) || overloaded.has(channel.colony)) continue;
+                const energy = channel.energy + parasite.energy;
+                const organic = channel.organic + parasite.organic;
+                if (energy < energyUpkeep || organic < organicUpkeep) continue;
+                channel.energy = energy - energyUpkeep;
+                channel.organic = organic - organicUpkeep;
+                parasite.energy = 0;
+                parasite.organic = 0;
+                supportedParasites.add(parasite);
+            }
+        }
+
         for (const cell of existing) {
             if (this.impactThisTick && (cell.host ? this.parasites : this.cells).get(cell.index) !== cell) continue;
             const excess = overloaded.size && overloaded.get(cell.colony);
@@ -1235,6 +1253,7 @@ export class Simulation {
                 this.drop(cell, 'excess', excess);
                 continue;
             }
+            if (supportedParasites?.has(cell)) continue;
             if (cell.type === 'converter' && cell.organic >= this.limits.stop) {
                 cell.lastWorkAge = cell.age;
             } else if (cell.type === 'converter' && cell.energy > cell.organic) {
