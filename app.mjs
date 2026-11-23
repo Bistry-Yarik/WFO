@@ -22,6 +22,11 @@ const fieldWidth = document.querySelector('#field-width');
 const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
+const survivalMode = document.querySelector('#survival-mode');
+const buildControl = document.querySelector('#build-control');
+const buildTool = document.querySelector('#build-cell');
+const gameStatus = document.querySelector('#game-status');
+const GAME_SAVE_KEY = 'wfo-game-v1';
 const viewport = document.querySelector('.viewport');
 const graphicsSettings = document.querySelector('#graphics-settings');
 const graphicsMode = document.querySelector('#graphics-mode');
@@ -527,7 +532,7 @@ function indexAt(event) {
 
 function plant(index) {
     const { width } = simulation;
-    if (index < 0) return;
+    if (index < 0 || simulation.survival) return;
     hovered = index;
     if (simulation.plantSeedPack(index % width, Math.floor(index / width), seedPack.value, Number(seedRadius.value))) {
         planted = index;
@@ -539,6 +544,7 @@ function plant(index) {
 }
 
 function paintStroke(fromX, fromY, event, tool, visited) {
+    if (simulation.survival) return;
     const rect = field.getBoundingClientRect();
     const inverse = viewMatrix().inverse();
     const toMap = (x, y) => inverse.transformPoint({
@@ -576,7 +582,14 @@ function paintStroke(fromX, fromY, event, tool, visited) {
 function useMapTool(event) {
     const index = indexAt(event);
     if (index < 0) return;
-    if (mapTool.value === 'seed') plant(index);
+    if (simulation.survival) {
+        if (simulation.survival.lost) return;
+        hovered = index;
+        gameStatus.textContent = simulation.buildPlayerCell(index, buildTool.value)
+            || 'Клетка построена';
+        draw();
+        updateReadout();
+    } else if (mapTool.value === 'seed') plant(index);
     else paintStroke(event.clientX, event.clientY, event, mapTool.value, new Set());
 }
 
@@ -625,7 +638,7 @@ if ('PointerEvent' in window) {
         const rotating = rotationEnabled.checked && event.button === 1 && event.pointerType === 'mouse';
         if (!event.isPrimary || (!canPlant && !rightDrag && !rotating)) return;
         if (rotating) event.preventDefault();
-        const paintTool = canPlant && mapTool.value !== 'seed' ? mapTool.value : null;
+        const paintTool = canPlant && !simulation.survival && mapTool.value !== 'seed' ? mapTool.value : null;
         press = { id: event.pointerId, x: event.clientX, y: event.clientY,
             dragging: rightDrag || rotating, canPlant, rotating, paintTool,
             visited: paintTool ? new Set() : null };
@@ -716,11 +729,13 @@ field.addEventListener('pointermove', event => {
 field.addEventListener('pointerleave', event => {
     if (event.pointerType !== 'touch') hovered = -1;
 });
-pause.addEventListener('click', () => {
-    paused = !paused;
+pause.addEventListener('click', () => setPaused(!paused));
+
+function setPaused(value) {
+    paused = value;
     pause.textContent = paused ? 'Продолжить' : 'Пауза';
     resetSpeedSample();
-});
+}
 function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
     const height = Math.max(1, viewport.clientHeight);
@@ -912,7 +927,34 @@ function resetSpeedSample() {
 
 speed.addEventListener('change', resetSpeedSample);
 document.addEventListener('visibilitychange', resetSpeedSample);
-function restart(width) {
+function applyGame(nextSimulation) {
+    deathEffects.clear();
+    simulation = nextSimulation;
+    if (worldAudio) {
+        simulation.onBirth = recordBirth;
+        worldAudio.events = {};
+        worldAudio.setListener(simulation, camera, field);
+    }
+    hovered = -1;
+    planted = -1;
+    fieldWidth.setCustomValidity('');
+    fieldWidth.value = simulation.width;
+    fieldSizeForm.hidden = Boolean(simulation.survival || simulation.cells.size);
+    showLimits();
+    updateGameControls();
+}
+
+function updateGameControls() {
+    const survival = simulation.survival;
+    survivalMode.textContent = survival ? 'Вернуться в песочницу' : 'Начать выживание';
+    for (const input of [seedPack, seedRadius, mapTool]) input.closest('label').hidden = Boolean(survival);
+    plantButton.hidden = Boolean(survival);
+    buildControl.hidden = !survival;
+    pause.disabled = Boolean(survival?.lost);
+    if (survival?.lost) gameStatus.textContent = 'Поражение. Твои клетки и семечки погибли';
+}
+
+function restart(width, survival = Boolean(simulation.survival)) {
     const resized = simulation.width !== width;
     let nextSimulation;
     try {
@@ -925,24 +967,65 @@ function restart(width) {
         fieldWidth.reportValidity();
         return;
     }
-    deathEffects.clear();
-    simulation = nextSimulation;
+    const start = survival ? nextSimulation.startSurvival() : -1;
+    applyGame(nextSimulation);
+    setPaused(false);
     if (resized) {
         camera.x = 0;
         camera.y = 0;
     }
-    if (worldAudio) {
-        simulation.onBirth = recordBirth;
-        worldAudio.events = {};
-        worldAudio.setListener(simulation, camera, field);
+    gameStatus.textContent = '';
+    if (survival) {
+        camera.angle = 0;
+        resetAngle.disabled = true;
+        setZoom(10);
+        const offset = cameraOffset(field.width / 2, field.height / 2);
+        camera.x = wrap(start % width + 0.5 - offset.x, width);
+        camera.y = wrap(Math.floor(start / width) + 0.5 - offset.y, simulation.height);
+        planted = start;
+        plantedUntil = performance.now() + 1500;
+        gameStatus.textContent = 'Твоё семечко в центре. Когда оно прорастёт, строй рядом с каналом';
     }
-    hovered = -1;
-    planted = -1;
-    fieldWidth.setCustomValidity('');
-    fieldWidth.value = width;
-    fieldSizeForm.hidden = false;
-    resetSpeedSample();
+    draw();
+    updateReadout();
 }
+
+survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
+document.querySelector('#save-game').addEventListener('click', () => {
+    try {
+        localStorage.setItem(GAME_SAVE_KEY, JSON.stringify({ game: simulation.createSave(), camera, speed: speed.value }));
+        gameStatus.textContent = 'Партия сохранена на этом устройстве';
+    } catch {
+        gameStatus.textContent = 'Сохранить не удалось. Возможно, хранилище заполнено или недоступно';
+    }
+});
+document.querySelector('#load-game').addEventListener('click', () => {
+    try {
+        const saved = JSON.parse(localStorage.getItem(GAME_SAVE_KEY));
+        if (!saved) {
+            gameStatus.textContent = 'Сохранённой партии пока нет';
+            return;
+        }
+        if (!validLimits(saved.game.limits)
+                || !['x', 'y', 'zoom', 'angle'].every(key => Number.isFinite(saved.camera[key]))
+                || !Array.from(speed.options).some(option => option.value === saved.speed)) {
+            throw new Error('Invalid save');
+        }
+        const world = Simulation.fromSave(saved.game, Math.random, recordDeath);
+        if (world.width !== simulation.width) configureWorldCanvas(world);
+        applyGame(world);
+        setZoom(saved.camera.zoom);
+        Object.assign(camera, { x: saved.camera.x, y: saved.camera.y, angle: saved.camera.angle });
+        resetAngle.disabled = camera.angle === 0;
+        speed.value = saved.speed;
+        setPaused(true);
+        if (!world.survival?.lost) gameStatus.textContent = 'Партия загружена. Нажмите «Продолжить»';
+        draw();
+        updateReadout();
+    } catch {
+        gameStatus.textContent = 'Загрузить сохранение не удалось';
+    }
+});
 
 fieldWidth.addEventListener('input', () => fieldWidth.setCustomValidity(''));
 fieldSizeForm.addEventListener('submit', event => {
@@ -966,6 +1049,11 @@ function runSimulationSlice(multiplier) {
     const deadline = now + slice;
     while (elapsed >= STEP && performance.now() < deadline) {
         simulation.tick();
+        if (simulation.survival?.lost) {
+            setPaused(true);
+            updateGameControls();
+            return;
+        }
         elapsed -= STEP;
     }
     if (multiplier >= continuousSpeed() && elapsed >= STEP) {

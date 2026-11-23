@@ -20,6 +20,7 @@ const COLLECTOR_MIN_YIELD = 0.10;
 const WATER_COLLECTOR_RATE = 50;
 const COLLECTOR_TYPES = new Set(['organic', 'energy', 'cleaner']);
 const RECYCLABLE_TYPES = new Set(['organic', 'energy', 'teeth', 'cleaner', 'converter', 'stomach']);
+const SURVIVAL_PACKS = ['standard', 'worm', 'cleanup', 'solar', 'devourer', 'electric'];
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
@@ -172,6 +173,95 @@ export class Simulation {
         this.totalSeeds = 0;
         this.mutations = 0;
         this.overloads = 0;
+        this.survival = null;
+    }
+
+    startSurvival() {
+        const x = Math.floor(this.width / 2);
+        const y = Math.floor(this.height / 2);
+        this.seed(x, y, null, SEED_COST, 'solar');
+        this.survival = { family: this.cells.get(this.wrappedIndex(x, y)).colony.family, nextSpawn: 35, lost: false };
+        return this.wrappedIndex(x, y);
+    }
+
+    buildPlayerCell(index, type) {
+        if (!this.survival || this.survival.lost) return 'Партия завершена';
+        if (type === 'seed' || !TYPES.includes(type)) return 'Выберите клетку для постройки';
+        const target = this.cells.get(index);
+        const family = this.survival.family;
+        const host = target && TOOTH_RESOURCE[type] && target.colony.family !== family && !this.parasites.has(index)
+            ? target : null;
+        if (target && !host) return 'Клетка занята';
+        if (!this.isSeedSiteSafe(index)) return 'Здесь опасно строить';
+
+        const channels = this.neighbors(index).map(site => this.cells.get(site))
+            .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
+        if (!channels.length) return 'Постройте рядом со своим каналом';
+        const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
+        const parent = channels.find(cell => cell.energy >= cost.energy + ENERGY_UPKEEP * STEP
+            && cell.organic >= cost.organic + ORGANIC_UPKEEP * STEP);
+        if (!parent) return `Нужно ⚡ ${cost.energy} / орг. ${cost.organic} и запас на жизнь канала`;
+
+        const child = this.buildGrowthCell(parent, index, type, cost, host);
+        if (host) this.bite(child, host);
+        return '';
+    }
+
+    updateSurvival() {
+        const state = this.survival;
+        if (!state || state.lost) return;
+        state.lost = !this.families.has(state.family);
+        if (state.lost || this.time < state.nextSpawn) return;
+
+        state.nextSpawn = this.time + 35 + 35 * this.random();
+        for (let attempt = 0; attempt < 16; attempt++) {
+            const index = Math.floor(this.random() * this.energy.length);
+            if (this.cells.has(index) || !this.isSeedSiteSafe(index)) continue;
+            const pack = SURVIVAL_PACKS[Math.floor(this.random() * SURVIVAL_PACKS.length)];
+            this.seed(index % this.width, Math.floor(index / this.width), null, SEED_COST, pack);
+            break;
+        }
+    }
+
+    createSave() {
+        const serialize = collection => Array.from(collection.values(), cell => ({
+            ...cell, colony: cell.colony.id, host: cell.host?.index,
+            wormPrevious: cell.wormPrevious?.index, wormNext: cell.wormNext?.index
+        }));
+        return {
+            version: 1, width: this.width, limits: this.limits, time: this.time,
+            totalSeeds: this.totalSeeds, mutations: this.mutations, overloads: this.overloads,
+            survival: this.survival,
+            energy: Array.from(this.energy), organic: Array.from(this.organic), radiation: Array.from(this.radiation),
+            colonies: Array.from(this.colonies.values()), cells: serialize(this.cells), parasites: serialize(this.parasites)
+        };
+    }
+
+    static fromSave(save, random = Math.random, onDeath = null) {
+        if (save.version !== 1 || !Number.isSafeInteger(save.width) || save.width < 32) throw new Error('Invalid save');
+        const world = new Simulation(random, onDeath, save.limits, save.width);
+        for (const resource of ['energy', 'organic', 'radiation']) {
+            if (save[resource].length !== world[resource].length) throw new Error('Invalid map');
+            world[resource].set(save[resource]);
+        }
+        for (const colony of save.colonies) world.colonies.set(colony.id, colony);
+        for (const [records, collection] of [[save.cells, world.cells], [save.parasites, world.parasites]]) {
+            for (const record of records) {
+                const colony = world.colonies.get(record.colony);
+                if (!colony) throw new Error('Invalid colony');
+                collection.set(record.index, { ...record, colony });
+            }
+        }
+        for (const collection of [world.cells, world.parasites]) {
+            for (const cell of collection.values()) {
+                cell.host = world.cells.get(cell.host) ?? null;
+                cell.wormPrevious = world.cells.get(cell.wormPrevious) ?? null;
+                cell.wormNext = world.cells.get(cell.wormNext) ?? null;
+            }
+        }
+        for (const key of ['time', 'totalSeeds', 'mutations', 'overloads', 'survival']) world[key] = save[key];
+        world.pruneColonies();
+        return world;
     }
 
     get daylight() {
@@ -238,6 +328,7 @@ export class Simulation {
     }
 
     plantSeedPack(x, y, pack, radius) {
+        if (this.survival) return 0;
         if (radius === 0) return Number(this.seed(x, y, null, SEED_COST, pack));
         let planted = 0;
         for (let dy = -radius; dy <= radius; dy++) {
@@ -627,7 +718,7 @@ export class Simulation {
     }
 
     grow(cell) {
-        if (cell.colony.thirsty) return;
+        if (cell.colony.family === this.survival?.family || cell.colony.thirsty) return;
         const command = cell.colony.genome[cell.gene % cell.colony.genome.length];
         if (command.wormRole) {
             this.growWorm(cell, command);
@@ -683,6 +774,7 @@ export class Simulation {
     }
 
     paintWater(indices, tool) {
+        if (this.survival) return;
         if (tool !== 'erase') {
             const resource = this[tool];
             const excess = tool === 'radiation' ? 1200 : Math.ceil(this.limits.soil * 1.2);
@@ -850,6 +942,7 @@ export class Simulation {
             this.colonies.clear();
             this.families.clear();
             this.transfers.length = 0;
+            this.updateSurvival();
             return;
         }
         for (const cell of this.cells.values()) {
@@ -1002,5 +1095,6 @@ export class Simulation {
         this.removeDisconnectedCells(this.cells);
         if (tickNumber % RECYCLE_CHECK_TICKS === 0) this.recycleUnusedCells();
         if (needsColonyCleanup || this.tickCells === null) this.pruneColonies();
+        this.updateSurvival();
     }
 }

@@ -123,3 +123,33 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 
 .toolbar, #field-size { font-size: 75%; }
 .toolbar label, .toolbar .phase time, .toolbar .speed-status, #field-size label { font-size: 9.75px; }
+
+.controls [hidden], #game-status:empty { display: none; }
+#game-status { color: #a4ecc0; }
+#build-cell { max-width: min(220px, 60vw); }
+
+@media (orientation: landscape) and (pointer: coarse) and (max-width: 1100px) {
+    main { padding: 0; }
+    main > header { display: none; }
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .field-panel, .field-panel:is(:fullscreen, .is-expanded) {
+        display: grid;
+        grid-template-columns: clamp(110px, 21vw, 190px) minmax(0, 1fr) clamp(90px, 17vw, 150px);
+        grid-template-rows: minmax(0, 1fr);
+        height: 100dvh;
+        border-radius: 0;
+    }
+    .field-tools, .field-panel footer { overflow: auto; }
+    .toolbar, .controls, .field-panel footer { align-items: stretch; flex-direction: column; flex-wrap: nowrap; }
+    .controls select { max-width: 100%; }
+    .toolbar, .field-panel footer { padding: 8px; }
+    .zoom-controls { flex-wrap: wrap; }
+    #field-size { padding: 0 8px 8px; }
+    .field-panel .viewport, .field-panel:is(:fullscreen, .is-expanded) .viewport {
+        grid-column: 2;
+        grid-row: 1;
+        height: 100%;
+    }
+    .field-panel footer { grid-column: 3; grid-row: 1; white-space: normal; justify-content: flex-start; }
+    #startup { grid-column: 1 / -1; }
+}
