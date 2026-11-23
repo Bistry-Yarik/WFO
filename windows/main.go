@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -80,6 +81,20 @@ func launch() error {
 		return err
 	}
 	if err := view.Bind("wfoStopLocalRoom", stopRoom); err != nil {
+		return err
+	}
+
+	if err := view.Bind("wfoPollLocalRoom", func() []roomMessage {
+		if room == nil {
+			return nil
+		}
+		return room.poll()
+	}); err != nil {
+		return err
+	}
+	if err := view.Bind("wfoSendLocalRoom", func(id string, packet json.RawMessage) bool {
+		return room == nil || room.send(id, packet)
+	}); err != nil {
 		return err
 	}
 

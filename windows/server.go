@@ -21,8 +21,7 @@ const roomPort = 8765
 var roomCodePattern = regexp.MustCompile(`^[a-z.]{10}$`)
 
 type roomAddress struct {
-	Token string   `json:"token"`
-	URLs  []string `json:"urls"`
+	URLs []string `json:"urls"`
 }
 
 type roomMessage struct {
@@ -32,38 +31,32 @@ type roomMessage struct {
 }
 
 type roomSocket struct {
-	conn  *websocket.Conn
-	write sync.Mutex
-}
-
-func (s *roomSocket) send(message roomMessage) error {
-	s.write.Lock()
-	defer s.write.Unlock()
-	s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	return s.conn.WriteJSON(message)
+	conn     *websocket.Conn
+	outgoing chan roomMessage
+	done     chan struct{}
 }
 
 type localRoom struct {
-	code, token string
-	server      *http.Server
-	mu          sync.Mutex
-	host        *roomSocket
-	guests      map[string]*roomSocket
+	code   string
+	server *http.Server
+	mu     sync.Mutex
+	guests map[string]*roomSocket
+	events chan roomMessage
+	done   chan struct{}
 }
 
 func newLocalRoom(code string, game []byte) (*localRoom, roomAddress, error) {
 	if !roomCodePattern.MatchString(code) {
 		return nil, roomAddress{}, errors.New("Нужны 10 английских букв или точек")
 	}
-	var secret [24]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		return nil, roomAddress{}, err
-	}
 	listener, err := net.Listen("tcp4", fmt.Sprintf(":%d", roomPort))
 	if err != nil {
 		return nil, roomAddress{}, fmt.Errorf("Не удалось открыть порт %d: %w", roomPort, err)
 	}
-	room := &localRoom{code: code, token: hex.EncodeToString(secret[:]), guests: make(map[string]*roomSocket)}
+	room := &localRoom{
+		code: code, guests: make(map[string]*roomSocket),
+		events: make(chan roomMessage, 64), done: make(chan struct{}),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/room", room.connect)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +70,7 @@ func newLocalRoom(code string, game []byte) (*localRoom, roomAddress, error) {
 	})
 	room.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go room.server.Serve(listener)
-	return room, roomAddress{Token: room.token, URLs: roomURLs(code)}, nil
+	return room, roomAddress{URLs: roomURLs(code)}, nil
 }
 
 func roomURLs(code string) []string {
@@ -99,30 +92,56 @@ func roomURLs(code string) []string {
 }
 
 func (room *localRoom) close() {
+	close(room.done)
 	room.server.Close()
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if room.host != nil {
-		room.host.conn.Close()
-	}
 	for _, guest := range room.guests {
 		guest.conn.Close()
 	}
 }
 
+func (room *localRoom) poll() []roomMessage {
+	events := make([]roomMessage, 0)
+	for len(events) < 32 {
+		select {
+		case message := <-room.events:
+			events = append(events, message)
+		default:
+			return events
+		}
+	}
+	return events
+}
+
+func (room *localRoom) send(id string, packet json.RawMessage) bool {
+	room.mu.Lock()
+	guest := room.guests[id]
+	room.mu.Unlock()
+	if guest == nil {
+		return true
+	}
+	select {
+	case guest.outgoing <- roomMessage{Kind: "packet", ID: id, Packet: packet}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (room *localRoom) enqueue(message roomMessage) bool {
+	select {
+	case room.events <- message:
+		return true
+	case <-room.done:
+		return false
+	}
+}
+
 func (room *localRoom) connect(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	hosting := query.Get("host") == room.token
-	if !hosting && query.Get("code") != room.code {
+	if r.URL.Query().Get("code") != room.code {
 		http.Error(w, "Room code mismatch", http.StatusForbidden)
 		return
-	}
-	if hosting {
-		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if !net.ParseIP(ip).IsLoopback() {
-			http.Error(w, "Host must be local", http.StatusForbidden)
-			return
-		}
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(req *http.Request) bool {
 		origin := req.Header.Get("Origin")
@@ -137,57 +156,31 @@ func (room *localRoom) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	conn.SetReadLimit(16 * 1024 * 1024)
-	socket := &roomSocket{conn: conn}
-
-	room.mu.Lock()
-	if hosting {
-		if room.host != nil {
-			room.mu.Unlock()
-			return
-		}
-		room.host = socket
-		room.mu.Unlock()
-		defer room.disconnectHost(socket)
-		for {
-			var message roomMessage
-			if conn.ReadJSON(&message) != nil {
-				return
-			}
-			if message.Kind != "packet" {
-				continue
-			}
-			room.mu.Lock()
-			guest := room.guests[message.ID]
-			room.mu.Unlock()
-			if guest != nil && guest.send(message) != nil {
-				guest.conn.Close()
-			}
-		}
-	}
-
+	conn.SetReadLimit(128 * 1024)
+	socket := &roomSocket{conn: conn, outgoing: make(chan roomMessage, 8), done: make(chan struct{})}
 	var idBytes [12]byte
 	if _, err := rand.Read(idBytes[:]); err != nil {
-		room.mu.Unlock()
 		return
 	}
 	id := hex.EncodeToString(idBytes[:])
-	host := room.host
-	if host == nil || len(room.guests) >= 16 {
+	room.mu.Lock()
+	if len(room.guests) >= 16 {
 		room.mu.Unlock()
 		return
 	}
 	room.guests[id] = socket
 	room.mu.Unlock()
 	defer func() {
+		close(socket.done)
 		room.mu.Lock()
 		delete(room.guests, id)
 		room.mu.Unlock()
-		_ = host.send(roomMessage{Kind: "gone", ID: id})
+		room.enqueue(roomMessage{Kind: "gone", ID: id})
 	}()
-	if host.send(roomMessage{Kind: "joined", ID: id}) != nil {
+	if !room.enqueue(roomMessage{Kind: "joined", ID: id}) {
 		return
 	}
+	go socket.writeMessages()
 	for {
 		var message roomMessage
 		if conn.ReadJSON(&message) != nil {
@@ -197,20 +190,23 @@ func (room *localRoom) connect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		message.ID = id
-		if host.send(message) != nil {
+		if !room.enqueue(message) {
 			return
 		}
 	}
 }
 
-func (room *localRoom) disconnectHost(socket *roomSocket) {
-	room.mu.Lock()
-	defer room.mu.Unlock()
-	if room.host != socket {
-		return
-	}
-	room.host = nil
-	for _, guest := range room.guests {
-		guest.conn.Close()
+func (s *roomSocket) writeMessages() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case message := <-s.outgoing:
+			s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if s.conn.WriteJSON(message) != nil {
+				s.conn.Close()
+				return
+			}
+		}
 	}
 }

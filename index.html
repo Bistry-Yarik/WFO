@@ -3378,6 +3378,121 @@ function decodeRoomPacket(packet) {
 
 let openingRoom = false;
 
+function startHostSession(code, info) {
+    const peers = new Map();
+    const session = { destroy() { window.wfoStopLocalRoom().catch(() => {}); } };
+    roomPeer = session;
+    roomCode = code;
+    roomHost = true;
+    speed.value = '1';
+    setPaused(false);
+    updateGameControls();
+    serverAddress.value = info.urls?.length ? new URL(info.urls[0]).host : '127.0.0.1:8765';
+    for (const url of info.urls ?? []) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.textContent = url;
+        serverDownloads.append(link);
+    }
+    showServerStatus(`Сервер ${code} запущен на этом ПК · игроков: 1`);
+
+    function addGuest(id) {
+        let pending = 0;
+        let queue = Promise.resolve();
+        const connection = {
+            get open() { return roomPeer === session && peers.has(id); },
+            get bufferSize() { return pending; },
+            dataChannel: { get bufferedAmount() { return pending * UPDATE_CHUNK_SIZE; } },
+            send(packet) {
+                if (!this.open) return;
+                const encoded = encodeRoomPacket(packet);
+                pending++;
+                queue = queue.then(async () => {
+                    while (this.open && !(await window.wfoSendLocalRoom(id, encoded))) {
+                        await new Promise(resolve => setTimeout(resolve, 40));
+                    }
+                }).catch(() => showServerStatus('Не удалось отправить данные гостю')).finally(() => { pending--; });
+            }
+        };
+        peers.set(id, connection);
+    }
+
+    async function pollGuests() {
+        if (roomPeer !== session) return;
+        try {
+            const messages = await window.wfoPollLocalRoom();
+            if (roomPeer !== session) return;
+            for (const { kind, id, packet } of messages ?? []) {
+                if (kind === 'joined') addGuest(id);
+                const connection = peers.get(id);
+                if (kind === 'packet' && connection) {
+                    try { receiveGuest(connection, decodeRoomPacket(packet)); }
+                    catch { showServerStatus('Получено некорректное сообщение гостя'); }
+                }
+                if (kind === 'gone' && connection) {
+                    incomingUpdates.delete(connection);
+                    roomPeerVersions.delete(connection);
+                    const guest = roomGuests.get(connection);
+                    if (guest) simulation.manualFamilies.delete(guest.family);
+                    roomGuests.delete(connection);
+                    peers.delete(id);
+                    showServerStatus(`Сервер ${code} · игроков: ${roomGuests.size + 1}`);
+                }
+            }
+            if (roomPeer === session) setTimeout(pollGuests, 40);
+        } catch {
+            if (roomPeer === session) {
+                closeRoom();
+                showServerStatus('Потеряна связь с сервером внутри WFO.exe');
+            }
+        }
+    }
+    void pollGuests();
+}
+
+function startGuestSession(code, address) {
+    address.protocol = 'ws:';
+    address.pathname = '/room';
+    address.search = new URLSearchParams({ code });
+    address.hash = '';
+    const socket = new WebSocket(address);
+    const session = { destroy() { socket.close(); } };
+    roomPeer = session;
+    roomCode = code;
+    roomHost = false;
+    const connection = {
+        get open() { return socket.readyState === WebSocket.OPEN; },
+        get bufferSize() { return socket.bufferedAmount / UPDATE_CHUNK_SIZE; },
+        dataChannel: socket,
+        send(packet) {
+            if (this.open) socket.send(JSON.stringify({ kind: 'packet', packet: encodeRoomPacket(packet) }));
+        }
+    };
+    hostConnection = connection;
+    updateGameControls();
+    socket.addEventListener('open', () => connection.send({ kind: 'hello', version: ROOM_VERSION }));
+    socket.addEventListener('message', event => {
+        if (roomPeer !== session) return;
+        try {
+            const { kind, packet } = JSON.parse(event.data);
+            if (kind === 'packet') void receiveHost(connection, decodeRoomPacket(packet));
+        } catch {
+            showServerStatus('Получено некорректное сообщение от сервера');
+        }
+    });
+    socket.addEventListener('close', () => {
+        if (roomPeer !== session) return;
+        closeRoom();
+        setPaused(true);
+        showServerStatus('Нет связи с ПК хоста. Проверьте адрес, код и подключение к сети.');
+    });
+    setTimeout(() => {
+        if (roomPeer !== session || connection.open) return;
+        closeRoom();
+        showServerStatus('ПК хоста не ответил. Проверьте адрес и порт 8765.');
+    }, 12000);
+}
+
 async function openRoom(hosting) {
     const code = serverCode.value.trim().toLowerCase();
     if (!/^[a-z.]{10}$/.test(code)) {
@@ -3392,120 +3507,44 @@ async function openRoom(hosting) {
         showServerStatus('В этом браузере сетевой режим недоступен');
         return;
     }
-    if (hosting && typeof window.wfoStartLocalRoom !== 'function') {
-        showServerStatus('Создать сервер можно в WFO.exe для Windows');
+    if (hosting && typeof window.wfoPollLocalRoom !== 'function') {
+        showServerStatus('Создать сервер можно в обновлённом WFO.exe для Windows');
         return;
     }
 
     let address;
-    try {
-        const input = serverAddress.value.trim();
-        address = new URL(input.includes('://') ? input : 'http://' + input);
-        if (address.protocol !== 'http:' || address.username || address.password) throw new Error();
-    } catch {
-        if (!hosting) {
+    if (!hosting) {
+        try {
+            const input = serverAddress.value.trim();
+            address = new URL(input.includes('://') ? input : 'http://' + input);
+            if (address.protocol !== 'http:' || address.username || address.password) throw new Error();
+            if (!address.port) address.port = '8765';
+        } catch {
             showServerStatus('Введите адрес компьютера хоста, например 192.168.1.10:8765');
             return;
         }
-    }
-    if (!hosting && !address.port) address.port = '8765';
-    if (!hosting && location.protocol === 'https:') {
-        const link = document.createElement('a');
-        address.pathname = '/';
-        address.search = new URLSearchParams({ room: code });
-        address.hash = '';
-        link.href = address.href;
-        link.textContent = 'Открыть игру с компьютера хоста';
-        serverDownloads.replaceChildren(link);
-        showServerStatus('Для локального сервера откройте ссылку ниже');
-        return;
+        if (location.protocol === 'https:') {
+            const link = document.createElement('a');
+            address.pathname = '/';
+            address.search = new URLSearchParams({ room: code });
+            address.hash = '';
+            link.href = address.href;
+            link.textContent = 'Открыть игру с компьютера хоста';
+            serverDownloads.replaceChildren(link);
+            showServerStatus('Для локального сервера откройте ссылку ниже');
+            return;
+        }
     }
 
     openingRoom = true;
     showServerStatus('Подключение…');
     serverDownloads.replaceChildren();
     try {
-        const info = hosting ? await window.wfoStartLocalRoom(code) : null;
-        if (hosting) address = new URL('http://127.0.0.1:8765');
-        address.protocol = 'ws:';
-        address.pathname = '/room';
-        address.search = new URLSearchParams(hosting ? { host: info.token } : { code });
-        address.hash = '';
-        const socket = new WebSocket(address);
-        const peers = new Map();
-        const connectionFor = id => ({
-            get open() { return socket.readyState === WebSocket.OPEN && (!id || peers.has(id)); },
-            get bufferSize() { return socket.bufferedAmount / UPDATE_CHUNK_SIZE; },
-            dataChannel: socket,
-            send(packet) {
-                if (this.open) socket.send(JSON.stringify({ kind: 'packet', id, packet: encodeRoomPacket(packet) }));
-            }
-        });
-        const session = { destroy() {
-            socket.close();
-            if (hosting) window.wfoStopLocalRoom?.().catch(() => {});
-        } };
-        roomPeer = session;
-        roomCode = code;
-        roomHost = hosting;
-        if (!hosting) hostConnection = connectionFor('');
-        updateGameControls();
-
-        socket.addEventListener('open', () => {
-            if (roomPeer !== session) return;
-            if (!hosting) {
-                hostConnection.send({ kind: 'hello', version: ROOM_VERSION });
-                return;
-            }
-            speed.value = '1';
-            setPaused(false);
-            serverAddress.value = info.urls?.length ? new URL(info.urls[0]).host : '127.0.0.1:8765';
-            for (const url of info.urls ?? []) {
-                const link = document.createElement('a');
-                link.href = url;
-                link.textContent = url;
-                serverDownloads.append(link);
-            }
-            showServerStatus(`Сервер ${code} запущен на этом ПК · игроков: 1`);
-        });
-        socket.addEventListener('message', event => {
-            if (roomPeer !== session) return;
-            try {
-                const { kind, id, packet } = JSON.parse(event.data);
-                if (!hosting) {
-                    if (kind === 'packet') void receiveHost(hostConnection, decodeRoomPacket(packet));
-                    return;
-                }
-                if (kind === 'joined') peers.set(id, connectionFor(id));
-                const connection = peers.get(id);
-                if (kind === 'packet' && connection) receiveGuest(connection, decodeRoomPacket(packet));
-                if (kind === 'gone' && connection) {
-                    incomingUpdates.delete(connection);
-                    roomPeerVersions.delete(connection);
-                    const guest = roomGuests.get(connection);
-                    if (guest) simulation.manualFamilies.delete(guest.family);
-                    roomGuests.delete(connection);
-                    peers.delete(id);
-                    showServerStatus(`Сервер ${code} · игроков: ${roomGuests.size + 1}`);
-                }
-            } catch {
-                showServerStatus('Получено некорректное сообщение от сервера');
-            }
-        });
-        socket.addEventListener('close', () => {
-            if (roomPeer !== session) return;
-            closeRoom();
-            setPaused(true);
-            showServerStatus(hosting ? 'Сервер остановлен' : 'Нет связи с ПК хоста. Проверьте адрес, код и подключение к сети.');
-        });
-        setTimeout(() => {
-            if (roomPeer !== session || socket.readyState === WebSocket.OPEN) return;
-            closeRoom();
-            showServerStatus('ПК хоста не ответил. Проверьте адрес и порт 8765.');
-        }, 12000);
+        if (hosting) startHostSession(code, await window.wfoStartLocalRoom(code));
+        else startGuestSession(code, address);
     } catch (error) {
-        if (hosting) window.wfoStopLocalRoom?.().catch(() => {});
-        showServerStatus(error.message || 'Не удалось открыть соединение');
+        if (hosting) window.wfoStopLocalRoom().catch(() => {});
+        showServerStatus(typeof error === 'string' ? error : error.message || 'Не удалось открыть соединение');
     } finally {
         openingRoom = false;
     }
