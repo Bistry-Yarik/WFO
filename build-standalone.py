@@ -15,8 +15,6 @@ audio = re.sub(r"^export ", "", audio, flags=re.MULTILINE)
 app = re.sub(r"^import .*\n", "", app, flags=re.MULTILINE).lstrip()
 
 for pattern, content in [
-    (r'<script id="wfo-peer">.*?</script>',
-     '<script id="wfo-peer">' + (root / "vendor" / "peerjs.min.js").read_text(encoding="utf-8") + '</script>'),
     (r'<link rel="stylesheet" href="style\.css">|<style id="wfo-style">.*?</style>',
      f'<style id="wfo-style">\n{css}\n</style>'),
     (r'<script type="module" src="app\.mjs"></script>|<script id="wfo-code">.*?</script>',

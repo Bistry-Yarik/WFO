@@ -61,6 +61,28 @@ func launch() error {
 		return err
 	}
 
+	var room *localRoom
+	stopRoom := func() {
+		if room != nil {
+			room.close()
+			room = nil
+		}
+	}
+	defer stopRoom()
+	if err := view.Bind("wfoStartLocalRoom", func(code string) (roomAddress, error) {
+		stopRoom()
+		next, address, err := newLocalRoom(code, game)
+		if err == nil {
+			room = next
+		}
+		return address, err
+	}); err != nil {
+		return err
+	}
+	if err := view.Bind("wfoStopLocalRoom", stopRoom); err != nil {
+		return err
+	}
+
 	address := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(page)}).String()
 	view.Navigate(address)
 	view.Run()

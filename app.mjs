@@ -1188,10 +1188,11 @@ survivalMode.addEventListener('click', () => {
         possessButton.click();
     }
 });
-const ROOM_VERSION = 1;
+const ROOM_VERSION = 2;
 const serverDialog = document.querySelector('#server-dialog');
 const serverStatus = document.querySelector('#server-status');
 const serverCode = document.querySelector('#server-code');
+const serverAddress = document.querySelector('#server-address');
 const serverDownloads = document.querySelector('#server-downloads');
 const possessButton = document.querySelector('#possess-family');
 let roomPeer = null;
@@ -1478,75 +1479,169 @@ async function receiveHost(connection, packet) {
     }
 }
 
-function openRoom(hosting) {
+function encodeRoomPacket(packet) {
+    const encoded = { ...packet };
+    for (const key of ['bytes', 'payload']) {
+        if (!(encoded[key] instanceof ArrayBuffer)) continue;
+        const bytes = new Uint8Array(encoded[key]);
+        const parts = [];
+        for (let offset = 0; offset < bytes.length; offset += 8192) {
+            parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+        }
+        encoded[key] = btoa(parts.join(''));
+    }
+    return encoded;
+}
+
+function decodeRoomPacket(packet) {
+    for (const key of ['bytes', 'payload']) {
+        if (typeof packet[key] === 'string') packet[key] = Uint8Array.from(atob(packet[key]), character => character.charCodeAt(0)).buffer;
+    }
+    return packet;
+}
+
+let openingRoom = false;
+
+async function openRoom(hosting) {
     const code = serverCode.value.trim().toLowerCase();
     if (!/^[a-z.]{10}$/.test(code)) {
         showServerStatus('Введите ровно 10 английских букв или точек');
         return;
     }
-    if (roomPeer) {
+    if (roomPeer || openingRoom) {
         showServerStatus('Сначала выйдите из текущей комнаты');
         return;
     }
-    if (!window.Peer || !window.CompressionStream || !window.DecompressionStream) {
-        showServerStatus('В этой версии браузера сетевой режим недоступен');
+    if (!window.WebSocket || !window.CompressionStream || !window.DecompressionStream) {
+        showServerStatus('В этом браузере сетевой режим недоступен');
         return;
     }
-    const id = 'wfo-room-' + Array.from(code, character => character.charCodeAt(0).toString(16)).join('');
-    const peer = hosting ? new window.Peer(id, { secure: true }) : new window.Peer({ secure: true });
-    roomPeer = peer;
-    roomCode = code;
-    roomHost = hosting;
-    serverDownloads.replaceChildren();
-    showServerStatus('Подключение…');
-    updateGameControls();
-    peer.on('open', () => {
-        if (roomPeer !== peer) return;
-        if (hosting) {
-            speed.value = '1';
-            resetSpeedSample();
-            setPaused(false);
-            showServerStatus(`Сервер ${code} создан · игроков: 1`);
+    if (hosting && typeof window.wfoStartLocalRoom !== 'function') {
+        showServerStatus('Создать сервер можно в WFO.exe для Windows');
+        return;
+    }
+
+    let address;
+    try {
+        const input = serverAddress.value.trim();
+        address = new URL(input.includes('://') ? input : 'http://' + input);
+        if (address.protocol !== 'http:' || address.username || address.password) throw new Error();
+    } catch {
+        if (!hosting) {
+            showServerStatus('Введите адрес компьютера хоста, например 192.168.1.10:8765');
             return;
         }
-        const connection = peer.connect(id, { reliable: true });
-        hostConnection = connection;
-        connection.on('open', () => connection.send({ kind: 'hello', version: ROOM_VERSION }));
-        connection.on('data', packet => receiveHost(connection, packet));
-        connection.on('close', () => {
-            if (connection !== hostConnection) return;
+    }
+    if (!hosting && !address.port) address.port = '8765';
+    if (!hosting && location.protocol === 'https:') {
+        const link = document.createElement('a');
+        address.pathname = '/';
+        address.search = new URLSearchParams({ room: code });
+        address.hash = '';
+        link.href = address.href;
+        link.textContent = 'Открыть игру с компьютера хоста';
+        serverDownloads.replaceChildren(link);
+        showServerStatus('Для локального сервера откройте ссылку ниже');
+        return;
+    }
+
+    openingRoom = true;
+    showServerStatus('Подключение…');
+    serverDownloads.replaceChildren();
+    try {
+        const info = hosting ? await window.wfoStartLocalRoom(code) : null;
+        if (hosting) address = new URL('http://127.0.0.1:8765');
+        address.protocol = 'ws:';
+        address.pathname = '/room';
+        address.search = new URLSearchParams(hosting ? { host: info.token } : { code });
+        address.hash = '';
+        const socket = new WebSocket(address);
+        const peers = new Map();
+        const connectionFor = id => ({
+            get open() { return socket.readyState === WebSocket.OPEN && (!id || peers.has(id)); },
+            get bufferSize() { return socket.bufferedAmount / UPDATE_CHUNK_SIZE; },
+            dataChannel: socket,
+            send(packet) {
+                if (this.open) socket.send(JSON.stringify({ kind: 'packet', id, packet: encodeRoomPacket(packet) }));
+            }
+        });
+        const session = { destroy() {
+            socket.close();
+            if (hosting) window.wfoStopLocalRoom?.().catch(() => {});
+        } };
+        roomPeer = session;
+        roomCode = code;
+        roomHost = hosting;
+        if (!hosting) hostConnection = connectionFor('');
+        updateGameControls();
+
+        socket.addEventListener('open', () => {
+            if (roomPeer !== session) return;
+            if (!hosting) {
+                hostConnection.send({ kind: 'hello', version: ROOM_VERSION });
+                return;
+            }
+            speed.value = '1';
+            setPaused(false);
+            serverAddress.value = info.urls?.length ? new URL(info.urls[0]).host : '127.0.0.1:8765';
+            for (const url of info.urls ?? []) {
+                const link = document.createElement('a');
+                link.href = url;
+                link.textContent = url;
+                serverDownloads.append(link);
+            }
+            showServerStatus(`Сервер ${code} запущен на этом ПК · игроков: 1`);
+        });
+        socket.addEventListener('message', event => {
+            if (roomPeer !== session) return;
+            try {
+                const { kind, id, packet } = JSON.parse(event.data);
+                if (!hosting) {
+                    if (kind === 'packet') void receiveHost(hostConnection, decodeRoomPacket(packet));
+                    return;
+                }
+                if (kind === 'joined') peers.set(id, connectionFor(id));
+                const connection = peers.get(id);
+                if (kind === 'packet' && connection) receiveGuest(connection, decodeRoomPacket(packet));
+                if (kind === 'gone' && connection) {
+                    incomingUpdates.delete(connection);
+                    roomPeerVersions.delete(connection);
+                    const guest = roomGuests.get(connection);
+                    if (guest) simulation.manualFamilies.delete(guest.family);
+                    roomGuests.delete(connection);
+                    peers.delete(id);
+                    showServerStatus(`Сервер ${code} · игроков: ${roomGuests.size + 1}`);
+                }
+            } catch {
+                showServerStatus('Получено некорректное сообщение от сервера');
+            }
+        });
+        socket.addEventListener('close', () => {
+            if (roomPeer !== session) return;
             closeRoom();
             setPaused(true);
-            showServerStatus('Связь с сервером закрыта');
+            showServerStatus(hosting ? 'Сервер остановлен' : 'Нет связи с ПК хоста. Проверьте адрес, код и подключение к сети.');
         });
-        connection.on('error', () => showServerStatus('Ошибка прямого соединения'));
         setTimeout(() => {
-            if (hostConnection !== connection || connection.open) return;
+            if (roomPeer !== session || socket.readyState === WebSocket.OPEN) return;
             closeRoom();
-            showServerStatus('Прямое соединение не установилось. Проверьте код и сеть.');
-        }, 20000);
-    });
-    peer.on('connection', connection => {
-        if (!hosting) {
-            connection.close();
-            return;
-        }
-        connection.on('data', packet => receiveGuest(connection, packet));
-        connection.on('close', () => {
-            incomingUpdates.delete(connection);
-            roomPeerVersions.delete(connection);
-            const guest = roomGuests.get(connection);
-            if (!guest) return;
-            simulation.manualFamilies.delete(guest.family);
-            roomGuests.delete(connection);
-            if (roomPeer === peer) showServerStatus(`Сервер ${code} · игроков: ${roomGuests.size + 1}`);
-        });
-    });
-    peer.on('error', error => {
-        if (roomPeer !== peer) return;
-        showServerStatus(error.type === 'unavailable-id' ? 'Этот код уже занят'
-            : error.type === 'peer-unavailable' ? 'Сервер с таким кодом не найден' : 'Подключение не удалось');
-        closeRoom();
+            showServerStatus('ПК хоста не ответил. Проверьте адрес и порт 8765.');
+        }, 12000);
+    } catch (error) {
+        if (hosting) window.wfoStopLocalRoom?.().catch(() => {});
+        showServerStatus(error.message || 'Не удалось открыть соединение');
+    } finally {
+        openingRoom = false;
+    }
+}
+
+const invitationCode = new URLSearchParams(location.search).get('room');
+if (location.protocol === 'http:' && invitationCode) {
+    serverCode.value = invitationCode;
+    serverAddress.value = location.host;
+    queueMicrotask(() => {
+        serverDialog.showModal();
+        void openRoom(false);
     });
 }
 
