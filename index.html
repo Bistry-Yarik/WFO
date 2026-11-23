@@ -505,19 +505,71 @@ class Simulation {
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return 'Постройте рядом со своим каналом';
         const cost = type === 'seed' ? SEED_COST : type === 'channel' ? CHANNEL_COST : CELL_COST;
-        const parent = channels.find(cell => cell.energy >= cost.energy + ENERGY_UPKEEP * STEP
-            && cell.organic >= cost.organic + ORGANIC_UPKEEP * STEP);
-        if (!parent) return `Нужно ⚡ ${cost.energy} / орг. ${cost.organic} и запас на жизнь канала`;
-
+        if (!this.fundPlayerConstruction(channels, cost)) return this.constructionCostMessage(cost);
+        const parent = channels[0];
         if (type === 'seed') {
-            this.seed(index % this.width, Math.floor(index / this.width), parent.colony, cost);
-            parent.energy -= cost.energy;
-            parent.organic -= cost.organic;
+            this.placeSeedAt(index, parent.colony, cost);
         } else {
-            const child = this.buildGrowthCell(parent, index, type, cost, host);
+            const child = this.placeGrowthCell(parent, index, type, cost, host);
             if (host) this.bite(child, host);
         }
         return '';
+    }
+
+    throwPlayerSeed(index) {
+        if (!this.survival || this.survival.lost) return 'Партия завершена';
+        const family = this.survival.family;
+        if (this.cells.get(index)?.colony.family === family) return 'Здесь уже есть твоя клетка';
+        if (!this.isSeedSiteSafe(index)) return 'Здесь опасно сажать семечко';
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        const channels = THROW_OFFSETS.map(([dx, dy]) => this.cells.get(this.wrappedIndex(x + dx, y + dy)))
+            .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
+        if (!channels.length) return `В радиусе ${SEED_THROW_RANGE} клеток нет твоего канала`;
+        if (!this.fundPlayerConstruction(channels, THROWN_SEED_COST)) {
+            return this.constructionCostMessage(THROWN_SEED_COST);
+        }
+        this.placeSeedAt(index, channels[0].colony, THROWN_SEED_COST);
+        return '';
+    }
+
+    constructionCostMessage({ energy, organic }) {
+        return `Нужно ⚡ ${energy} / орг. ${organic}. Можно выделить запасы из других связанных каналов`;
+    }
+
+    fundPlayerConstruction(channels, cost) {
+        const sources = [...channels];
+        const visited = new Set(sources);
+        // Explore the connected network, but only draw from explicitly marked remote channels.
+        const queue = [...sources];
+        for (const channel of queue) {
+            for (const index of this.neighbors(channel.index)) {
+                const neighbor = this.cells.get(index);
+                if (neighbor?.type !== 'channel' || neighbor.colony.family !== channel.colony.family
+                        || visited.has(neighbor)) continue;
+                visited.add(neighbor);
+                queue.push(neighbor);
+                if (neighbor.constructionDonor) sources.push(neighbor);
+            }
+        }
+
+        let remainingEnergy = cost.energy;
+        let remainingOrganic = cost.organic;
+        const payments = [];
+        for (const channel of sources) {
+            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP));
+            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP));
+            payments.push({ channel, energy, organic });
+            remainingEnergy -= energy;
+            remainingOrganic -= organic;
+            if (!remainingEnergy && !remainingOrganic) break;
+        }
+        if (remainingEnergy || remainingOrganic) return false;
+        for (const { channel, energy, organic } of payments) {
+            channel.energy -= energy;
+            channel.organic -= organic;
+        }
+        return true;
     }
 
     playerCellAt(index) {
@@ -537,6 +589,11 @@ class Simulation {
             this.updateSurvival();
             return '';
         }
+        if (action === 'donate' && cell.type === 'channel') {
+            cell.constructionDonor = !cell.constructionDonor;
+            return '';
+        }
+        if (action !== 'boost') return 'Действие недоступно';
         if (cell.boostUntil > this.time) return 'Клетка уже ускорена';
         const channels = this.neighbors(index).map(site => this.cells.get(site));
         const donor = [cell, ...channels].find(candidate => candidate
@@ -849,10 +906,14 @@ class Simulation {
     launchSeedAt(index, cell, cost) {
         cell.energy -= cost.energy;
         cell.organic -= cost.organic;
+        this.placeSeedAt(index, cell.colony, cost);
+    }
+
+    placeSeedAt(index, colony, cost) {
         if (this.cells.has(index)) {
-            this.impactSeed(index, cell.colony, cost);
+            this.impactSeed(index, colony, cost);
         } else {
-            this.seed(index % this.width, Math.floor(index / this.width), cell.colony, cost);
+            this.seed(index % this.width, Math.floor(index / this.width), colony, cost);
         }
     }
 
@@ -951,6 +1012,12 @@ class Simulation {
     }
 
     buildGrowthCell(parent, index, type, cost, host = null, branchStep = null) {
+        parent.energy -= cost.energy;
+        parent.organic -= cost.organic;
+        return this.placeGrowthCell(parent, index, type, cost, host, branchStep);
+    }
+
+    placeGrowthCell(parent, index, type, cost, host = null, branchStep = null) {
         const child = this.makeCell(index, type, parent.colony, cost.energy, cost.organic);
         if (type === 'channel') child.gene = branchStep ?? parent.gene + 1;
         if (host) {
@@ -961,8 +1028,6 @@ class Simulation {
         }
         this.tickCells = null;
         this.onBirth?.(index);
-        parent.energy -= cost.energy;
-        parent.organic -= cost.organic;
         return child;
     }
 
@@ -2119,6 +2184,7 @@ function updateReadout() {
         const { type, direction, seekRadiation, wormRole } = genome[step];
         const command = wormRole === 'turn' ? 'Поворот семечком' : `${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`;
         channelDetails = ` · Ген ${step + 1}/${genome.length}: ${command}`
+            + (cell.constructionDonor ? ' · Выделяет ресурсы на стройку' : '')
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
@@ -2252,18 +2318,27 @@ function openCellMenu(index) {
         ? [['delete', 'Удалить'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
         : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
             .map(type => [type, names[type]]);
+    if (owned?.type === 'channel') {
+        choices.push(['donate', owned.constructionDonor ? 'Прекратить выделять ресурсы' : 'Выделять ресурсы на стройку']);
+    }
+    if (!owned) choices.push(['throw', 'Бросить семечко · 500⚡ / 75 орг.']);
     cellMenuActions.replaceChildren(...choices.map(([action, label]) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = label;
         button.addEventListener('click', () => {
-            const error = owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
+            const error = action === 'throw' ? simulation.throwPlayerSeed(index)
+                : owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
             if (error) {
                 cellMenuStatus.textContent = error;
                 return;
             }
-            gameStatus.textContent = owned ? (action === 'delete' ? 'Клетка удалена' : 'Клетка ускорена на 30 с')
-                : action === 'seed' ? 'Семечко посажено' : 'Клетка построена';
+            const messages = {
+                delete: 'Клетка удалена', boost: 'Клетка ускорена на 30 с',
+                donate: owned?.constructionDonor ? 'Канал выделяет ресурсы на стройку' : 'Выделение ресурсов отключено',
+                seed: 'Семечко посажено', throw: 'Семечко брошено'
+            };
+            gameStatus.textContent = messages[action] ?? 'Клетка построена';
             updateGameControls();
             draw();
             updateReadout();

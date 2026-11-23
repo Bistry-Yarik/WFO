@@ -460,6 +460,7 @@ function updateReadout() {
         const { type, direction, seekRadiation, wormRole } = genome[step];
         const command = wormRole === 'turn' ? 'Поворот семечком' : `${names[type]} ${seekRadiation ? 'к радиации' : directionIcons[direction]}`;
         channelDetails = ` · Ген ${step + 1}/${genome.length}: ${command}`
+            + (cell.constructionDonor ? ' · Выделяет ресурсы на стройку' : '')
             + ` · Пороги семени (энергия/органика): рядом ${needs.energy}/${needs.organic}, бросок ${needs.throwEnergy}/${needs.organic}`;
     }
     inspect.textContent = cell
@@ -593,18 +594,27 @@ function openCellMenu(index) {
         ? [['delete', 'Удалить'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
         : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
             .map(type => [type, names[type]]);
+    if (owned?.type === 'channel') {
+        choices.push(['donate', owned.constructionDonor ? 'Прекратить выделять ресурсы' : 'Выделять ресурсы на стройку']);
+    }
+    if (!owned) choices.push(['throw', 'Бросить семечко · 500⚡ / 75 орг.']);
     cellMenuActions.replaceChildren(...choices.map(([action, label]) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = label;
         button.addEventListener('click', () => {
-            const error = owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
+            const error = action === 'throw' ? simulation.throwPlayerSeed(index)
+                : owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
             if (error) {
                 cellMenuStatus.textContent = error;
                 return;
             }
-            gameStatus.textContent = owned ? (action === 'delete' ? 'Клетка удалена' : 'Клетка ускорена на 30 с')
-                : action === 'seed' ? 'Семечко посажено' : 'Клетка построена';
+            const messages = {
+                delete: 'Клетка удалена', boost: 'Клетка ускорена на 30 с',
+                donate: owned?.constructionDonor ? 'Канал выделяет ресурсы на стройку' : 'Выделение ресурсов отключено',
+                seed: 'Семечко посажено', throw: 'Семечко брошено'
+            };
+            gameStatus.textContent = messages[action] ?? 'Клетка построена';
             updateGameControls();
             draw();
             updateReadout();
