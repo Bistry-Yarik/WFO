@@ -1283,6 +1283,7 @@ class Simulation {
 
     recycleCollection(collection) {
         for (const cell of collection.values()) {
+            if (cell.colony.family === this.survival?.family) continue;
             if (!RECYCLABLE_TYPES.has(cell.type) || !this.shouldRecycle(cell)) continue;
             const channels = [];
             for (const index of this.neighbors(cell.index)) {
