@@ -153,3 +153,18 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
     .field-panel footer { grid-column: 3; grid-row: 1; white-space: normal; justify-content: flex-start; }
     #startup { grid-column: 1 / -1; }
 }
+
+#cell-menu {
+    width: min(390px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    color: inherit;
+    background: #182720;
+    border: 1px solid #415a4d;
+    border-radius: 10px;
+    padding: 14px;
+}
+#cell-menu::backdrop { background: #08130d66; }
+#cell-menu form { display: grid; gap: 10px; }
+#cell-menu-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+#cell-menu-status { color: var(--muted); margin: 0; }
+#cell-menu-status:empty { display: none; }

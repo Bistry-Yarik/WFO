@@ -21,6 +21,8 @@ const WATER_COLLECTOR_RATE = 50;
 const COLLECTOR_TYPES = new Set(['organic', 'energy', 'cleaner']);
 const RECYCLABLE_TYPES = new Set(['organic', 'energy', 'teeth', 'cleaner', 'converter', 'stomach']);
 const SURVIVAL_PACKS = ['standard', 'worm', 'cleanup', 'solar', 'devourer', 'electric'];
+const PLAYER_BOOST_COST = 500;
+const PLAYER_BOOST_DURATION = 30;
 const MUTATION_CHANCE = 0.02;
 const MAX_MUTATION_CHANCE = 0.5;
 const DEATH_RADIATION = 300;
@@ -186,7 +188,7 @@ export class Simulation {
 
     buildPlayerCell(index, type) {
         if (!this.survival || this.survival.lost) return 'Партия завершена';
-        if (type === 'seed' || !TYPES.includes(type)) return 'Выберите клетку для постройки';
+        if (!TYPES.includes(type)) return 'Выберите клетку для постройки';
         const target = this.cells.get(index);
         const family = this.survival.family;
         const host = target && TOOTH_RESOURCE[type] && target.colony.family !== family && !this.parasites.has(index)
@@ -197,14 +199,52 @@ export class Simulation {
         const channels = this.neighbors(index).map(site => this.cells.get(site))
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return 'Постройте рядом со своим каналом';
-        const cost = type === 'channel' ? CHANNEL_COST : CELL_COST;
+        const cost = type === 'seed' ? SEED_COST : type === 'channel' ? CHANNEL_COST : CELL_COST;
         const parent = channels.find(cell => cell.energy >= cost.energy + ENERGY_UPKEEP * STEP
             && cell.organic >= cost.organic + ORGANIC_UPKEEP * STEP);
         if (!parent) return `Нужно ⚡ ${cost.energy} / орг. ${cost.organic} и запас на жизнь канала`;
 
-        const child = this.buildGrowthCell(parent, index, type, cost, host);
-        if (host) this.bite(child, host);
+        if (type === 'seed') {
+            this.seed(index % this.width, Math.floor(index / this.width), parent.colony, cost);
+            parent.energy -= cost.energy;
+            parent.organic -= cost.organic;
+        } else {
+            const child = this.buildGrowthCell(parent, index, type, cost, host);
+            if (host) this.bite(child, host);
+        }
         return '';
+    }
+
+    playerCellAt(index) {
+        if (!this.survival || this.survival.lost) return null;
+        for (const cell of [this.parasites.get(index), this.cells.get(index)]) {
+            if (cell?.colony.family === this.survival.family) return cell;
+        }
+        return null;
+    }
+
+    managePlayerCell(index, action) {
+        const cell = this.playerCellAt(index);
+        if (!cell) return 'Здесь нет твоей клетки';
+        if (action === 'delete') {
+            this.drop(cell, 'deficit', 0);
+            this.pruneColonies();
+            this.updateSurvival();
+            return '';
+        }
+        if (cell.boostUntil > this.time) return 'Клетка уже ускорена';
+        const channels = this.neighbors(index).map(site => this.cells.get(site));
+        const donor = [cell, ...channels].find(candidate => candidate
+            && candidate.colony.family === cell.colony.family && (candidate === cell || candidate.type === 'channel')
+            && candidate.energy >= PLAYER_BOOST_COST + ENERGY_UPKEEP * STEP);
+        if (!donor) return 'Нужно 500 энергии в клетке или соседнем своём канале';
+        donor.energy -= PLAYER_BOOST_COST;
+        cell.boostUntil = this.time + PLAYER_BOOST_DURATION;
+        return '';
+    }
+
+    workStep(cell) {
+        return cell.boostUntil > this.time ? STEP * 2 : STEP;
     }
 
     updateSurvival() {
@@ -368,7 +408,7 @@ export class Simulation {
         const ground = this[resource];
         const x = cell.index % this.width;
         const y = Math.floor(cell.index / this.width);
-        const base = WATER_COLLECTOR_RATE * STEP * productionFactor(cell[resource], this.limits);
+        const base = WATER_COLLECTOR_RATE * this.workStep(cell) * productionFactor(cell[resource], this.limits);
         if (base === 0) return;
         const bonus = resource === 'organic' ? organicBoost(cell, base) : 0;
         let remaining = base + bonus;
@@ -397,7 +437,7 @@ export class Simulation {
             }
         }
         const rate = strongest >= STRONG_RADIATION ? RADIATION_CLEANUP_MAX_RATE : RADIATION_CLEANUP_RATE;
-        const budget = rate * STEP;
+        const budget = rate * this.workStep(cell);
         let remaining = budget;
         for (let dy = -1; dy <= 1 && remaining > 0; dy++) {
             for (let dx = -1; dx <= 1 && remaining > 0; dx++) {
@@ -457,7 +497,7 @@ export class Simulation {
 
     bite(cell, onlyTarget = null) {
         const resource = TOOTH_RESOURCE[cell.type];
-        const base = BITE_RATE * STEP * productionFactor(cell[resource], this.limits);
+        const base = BITE_RATE * this.workStep(cell) * productionFactor(cell[resource], this.limits);
         const capacity = base + (resource === 'organic' ? organicBoost(cell, base) : 0);
         if (capacity === 0) {
             cell.lastWorkAge = cell.age;
@@ -971,7 +1011,7 @@ export class Simulation {
                 const x = cell.index % this.width;
                 if (cell.type === 'chlorophyll') {
                     const lightRate = shadedColumns[x] ? 50 : 150;
-                    cell.energy += lightRate * STEP * productionFactor(cell.energy, this.limits);
+                    cell.energy += lightRate * this.workStep(cell) * productionFactor(cell.energy, this.limits);
                 }
                 shadedColumns[x] = 1;
             }
@@ -980,12 +1020,12 @@ export class Simulation {
         for (const cell of existing) {
             cell.flow = 0;
             cell.flowResources = 0;
-            cell.age += STEP;
+            cell.age += cell.type === 'seed' ? this.workStep(cell) : STEP;
             if (cell.type === 'seed' && cell.age >= 2) cell.type = 'channel';
             if (cell.type === 'organic' || cell.type === 'energy') this.collect(cell, cell.type);
             if (!daylight && cell.type === 'chlorophyll') {
-                cell.energy += NIGHT_ENERGY_RATE * STEP * productionFactor(cell.energy, this.limits);
-                cell.organic += NIGHT_ORGANIC_RATE * STEP * productionFactor(cell.organic, this.limits);
+                cell.energy += NIGHT_ENERGY_RATE * this.workStep(cell) * productionFactor(cell.energy, this.limits);
+                cell.organic += NIGHT_ORGANIC_RATE * this.workStep(cell) * productionFactor(cell.organic, this.limits);
             }
         }
 
@@ -1015,8 +1055,11 @@ export class Simulation {
                 if (targetTrap?.type === 'blueTeeth') targetEnergy = Math.min(targetEnergy, targetTrap.energy);
                 else if (targetTrap) targetOrganic = Math.min(targetOrganic, targetTrap.organic);
             }
-            const energy = (sourceEnergy - targetEnergy) * 0.025;
-            const organic = (sourceOrganic - targetOrganic) * 0.025;
+            const boosted = (cell.type === 'channel' && cell.boostUntil > this.time)
+                || (neighbor.type === 'channel' && neighbor.boostUntil > this.time);
+            const transferFactor = boosted ? 0.05 : 0.025;
+            const energy = (sourceEnergy - targetEnergy) * transferFactor;
+            const organic = (sourceOrganic - targetOrganic) * transferFactor;
             const flow = (Math.abs(energy) + Math.abs(organic)) / STEP;
             transfer.energy = energy;
             transfer.organic = organic;
@@ -1059,7 +1102,7 @@ export class Simulation {
                 cell.lastWorkAge = cell.age;
             } else if (cell.type === 'converter' && cell.energy > cell.organic) {
                 const difference = cell.energy - cell.organic;
-                const capacity = CONVERSION_RATE * STEP * productionFactor(cell.organic, this.limits);
+                const capacity = CONVERSION_RATE * this.workStep(cell) * productionFactor(cell.organic, this.limits);
                 const base = Math.min(capacity, difference / 2);
                 // Each bonus unit closes the gap by three: two energy spent, one organic gained.
                 const bonus = Math.min(organicBoost(cell, capacity), Math.max(0, difference - 2 * base) / 3);
@@ -1070,7 +1113,7 @@ export class Simulation {
                 cell.lastWorkAge = cell.age;
             } else if (cell.type === 'stomach' && cell.organic > cell.energy) {
                 const amount = Math.min(
-                    CONVERSION_RATE * STEP * productionFactor(cell.energy, this.limits),
+                    CONVERSION_RATE * this.workStep(cell) * productionFactor(cell.energy, this.limits),
                     (cell.organic - cell.energy) / 2
                 );
                 cell.organic -= amount;

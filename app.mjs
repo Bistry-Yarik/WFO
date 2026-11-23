@@ -23,8 +23,10 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const survivalMode = document.querySelector('#survival-mode');
-const buildControl = document.querySelector('#build-control');
-const buildTool = document.querySelector('#build-cell');
+const cellMenu = document.querySelector('#cell-menu');
+const cellMenuTitle = document.querySelector('#cell-menu-title');
+const cellMenuActions = document.querySelector('#cell-menu-actions');
+const cellMenuStatus = document.querySelector('#cell-menu-status');
 const gameStatus = document.querySelector('#game-status');
 const GAME_SAVE_KEY = 'wfo-game-v1';
 const viewport = document.querySelector('.viewport');
@@ -104,6 +106,9 @@ let press = null;
 let pinch = null;
 let touchGesture = false;
 let lastTap = null;
+let lastCellTap = null;
+let resumeAfterCellMenu = false;
+let cellMenuPressed = false;
 let planted = -1;
 let plantedUntil = 0;
 let elapsed = 0;
@@ -579,16 +584,69 @@ function paintStroke(fromX, fromY, event, tool, visited) {
     }
 }
 
+function openCellMenu(index) {
+    const owned = simulation.playerCellAt(index);
+    const occupied = simulation.cells.has(index);
+    cellMenuTitle.textContent = owned ? names[owned.type] : occupied ? 'Чужая клетка' : 'Построить клетку';
+    cellMenuStatus.textContent = '';
+    const choices = owned
+        ? [['delete', 'Удалить'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
+        : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
+            .map(type => [type, names[type]]);
+    cellMenuActions.replaceChildren(...choices.map(([action, label]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+            const error = owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
+            if (error) {
+                cellMenuStatus.textContent = error;
+                return;
+            }
+            gameStatus.textContent = owned ? (action === 'delete' ? 'Клетка удалена' : 'Клетка ускорена на 30 с')
+                : action === 'seed' ? 'Семечко посажено' : 'Клетка построена';
+            updateGameControls();
+            draw();
+            updateReadout();
+            cellMenu.close();
+        });
+        return button;
+    }));
+    resumeAfterCellMenu = !paused;
+    setPaused(true);
+    cellMenuPressed = false;
+    cellMenu.showModal();
+}
+
+cellMenu.addEventListener('pointerdown', () => { cellMenuPressed = true; });
+cellMenu.addEventListener('click', event => {
+    // The second tap can generate a click after the dialog appears beneath it.
+    if (event.detail && !cellMenuPressed) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+    cellMenuPressed = false;
+}, true);
+
+cellMenu.addEventListener('close', () => {
+    if (resumeAfterCellMenu && !simulation.survival?.lost) setPaused(false);
+    resumeAfterCellMenu = false;
+});
+
 function useMapTool(event) {
     const index = indexAt(event);
     if (index < 0) return;
     if (simulation.survival) {
         if (simulation.survival.lost) return;
         hovered = index;
-        gameStatus.textContent = simulation.buildPlayerCell(index, buildTool.value)
-            || 'Клетка построена';
-        draw();
-        updateReadout();
+        const now = performance.now();
+        if (lastCellTap?.index === index && now - lastCellTap.time <= 500) {
+            lastCellTap = null;
+            openCellMenu(index);
+        } else {
+            lastCellTap = { index, time: now };
+            updateReadout();
+        }
     } else if (mapTool.value === 'seed') plant(index);
     else paintStroke(event.clientX, event.clientY, event, mapTool.value, new Set());
 }
@@ -937,6 +995,7 @@ function applyGame(nextSimulation) {
     }
     hovered = -1;
     planted = -1;
+    lastCellTap = null;
     fieldWidth.setCustomValidity('');
     fieldWidth.value = simulation.width;
     fieldSizeForm.hidden = Boolean(simulation.survival || simulation.cells.size);
@@ -949,7 +1008,6 @@ function updateGameControls() {
     survivalMode.textContent = survival ? 'Вернуться в песочницу' : 'Начать выживание';
     for (const input of [seedPack, seedRadius, mapTool]) input.closest('label').hidden = Boolean(survival);
     plantButton.hidden = Boolean(survival);
-    buildControl.hidden = !survival;
     pause.disabled = Boolean(survival?.lost);
     if (survival?.lost) gameStatus.textContent = 'Поражение. Твои клетки и семечки погибли';
 }
@@ -984,7 +1042,7 @@ function restart(width, survival = Boolean(simulation.survival)) {
         camera.y = wrap(Math.floor(start / width) + 0.5 - offset.y, simulation.height);
         planted = start;
         plantedUntil = performance.now() + 1500;
-        gameStatus.textContent = 'Твоё семечко в центре. Когда оно прорастёт, строй рядом с каналом';
+        gameStatus.textContent = 'Твоё семечко в центре. Когда оно прорастёт, дважды коснись клетки рядом с каналом';
     }
     draw();
     updateReadout();
