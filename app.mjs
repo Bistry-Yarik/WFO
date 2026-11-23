@@ -27,6 +27,7 @@ const cellMenu = document.querySelector('#cell-menu');
 const cellMenuTitle = document.querySelector('#cell-menu-title');
 const cellMenuActions = document.querySelector('#cell-menu-actions');
 const cellMenuStatus = document.querySelector('#cell-menu-status');
+const cellMenuHint = document.querySelector('#cell-menu-hint');
 const gameStatus = document.querySelector('#game-status');
 const GAME_SAVE_KEY = 'wfo-game-v1';
 const viewport = document.querySelector('.viewport');
@@ -585,11 +586,27 @@ function paintStroke(fromX, fromY, event, tool, visited) {
     }
 }
 
+const cellDescriptions = {
+    seed: 'Прорастает в канал твоего рода.',
+    channel: 'Передаёт энергию и органику между соседними клетками.',
+    chlorophyll: 'Вырабатывает энергию днём и ночью, а ночью ещё и органику.',
+    organic: 'Собирает органику из воды вокруг себя.',
+    energy: 'Собирает энергию из воды вокруг себя.',
+    converter: 'Превращает лишнюю энергию в органику.',
+    stomach: 'Превращает лишнюю органику в энергию.',
+    cleaner: 'Собирает радиацию и превращает её в энергию и органику.',
+    teeth: 'Крадёт органику у чужих клеток.',
+    blueTeeth: 'Крадёт энергию у чужих клеток.',
+    throw: 'Бросает семечко на расстояние до 6 клеток от своего канала.'
+};
+
 function openCellMenu(index) {
     const owned = simulation.playerCellAt(index);
     const occupied = simulation.cells.has(index);
     cellMenuTitle.textContent = owned ? names[owned.type] : occupied ? 'Чужая клетка' : 'Построить клетку';
     cellMenuStatus.textContent = '';
+    cellMenuHint.textContent = '';
+    cellMenuActions.classList.toggle('cell-icons', !owned);
     const choices = owned
         ? [['delete', 'Удалить'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
         : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
@@ -601,7 +618,22 @@ function openCellMenu(index) {
     cellMenuActions.replaceChildren(...choices.map(([action, label]) => {
         const button = document.createElement('button');
         button.type = 'button';
-        button.textContent = label;
+        if (owned) {
+            button.textContent = label;
+        } else {
+            const icon = document.createElement('i');
+            icon.className = action === 'blueTeeth' ? 'blue-teeth' : action === 'throw' ? 'seed thrown-seed' : action;
+            icon.setAttribute('aria-hidden', 'true');
+            button.append(icon);
+            const hint = `${label}. ${cellDescriptions[action]}`;
+            button.setAttribute('aria-label', hint);
+            button.addEventListener('pointerenter', event => {
+                if (event.pointerType !== 'touch') cellMenuHint.textContent = hint;
+            });
+            button.addEventListener('focus', () => {
+                if (button.matches(':focus-visible')) cellMenuHint.textContent = hint;
+            });
+        }
         button.addEventListener('click', () => {
             const error = action === 'throw' ? simulation.throwPlayerSeed(index)
                 : owned ? simulation.managePlayerCell(index, action) : simulation.buildPlayerCell(index, action);
@@ -650,7 +682,8 @@ function useMapTool(event) {
         if (simulation.survival.lost) return;
         hovered = index;
         const now = performance.now();
-        if (lastCellTap?.index === index && now - lastCellTap.time <= 500) {
+        const mouse = event.pointerType === 'mouse' || (!event.pointerType && !touch);
+        if (mouse || (lastCellTap?.index === index && now - lastCellTap.time <= 500)) {
             lastCellTap = null;
             openCellMenu(index);
         } else {
@@ -1052,7 +1085,7 @@ function restart(width, survival = Boolean(simulation.survival)) {
         camera.y = wrap(Math.floor(start / width) + 0.5 - offset.y, simulation.height);
         planted = start;
         plantedUntil = performance.now() + 1500;
-        gameStatus.textContent = 'Твоё семечко в центре. Когда оно прорастёт, дважды коснись клетки рядом с каналом';
+        gameStatus.textContent = 'Твоё семечко в центре. Когда оно прорастёт, открой меню клетки рядом с каналом';
     }
     draw();
     updateReadout();
