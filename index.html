@@ -183,6 +183,19 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .cell-icons .thrown-seed { transform: translate(3px, -3px) scale(.75); box-shadow: -8px 8px 0 -4px #9b78b8; }
 #cell-menu-hint { margin: 0; color: var(--muted); font-size: 13px; }
 #cell-menu-hint:empty { display: none; }
+
+.toolbar .phase { width: 9em; flex-wrap: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.toolbar #actual-speed, .toolbar #sound-status {
+    display: inline-block;
+    width: 12em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.toolbar #sound-status { width: 10em; }
+.toolbar #pause { width: 8.5em; }
+.toolbar #fullscreen { width: 13em; }
+#auto-donate[aria-pressed="true"] { background: #306443; }
 </style>
 </head>
 <body>
@@ -195,6 +208,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                     <div class="phase"><span id="phase"></span><time id="clock"></time></div>
                     <div class="controls">
                         <button id="survival-mode" type="button">Начать выживание</button>
+                        <button id="auto-donate" type="button" aria-pressed="false" hidden>Авторесурсы</button>
                         <button id="save-game" type="button">Сохранить</button>
                         <button id="load-game" type="button">Загрузить</button>
                         <label>Пакет <select id="seed-pack">
@@ -558,7 +572,7 @@ class Simulation {
                         || visited.has(neighbor)) continue;
                 visited.add(neighbor);
                 queue.push(neighbor);
-                if (neighbor.constructionDonor) sources.push(neighbor);
+                if (this.survival.autoDonate || neighbor.constructionDonor) sources.push(neighbor);
             }
         }
 
@@ -566,14 +580,19 @@ class Simulation {
         let remainingOrganic = cost.organic;
         const payments = [];
         for (const channel of sources) {
-            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP));
-            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP));
+            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP * 2));
+            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP * 2));
             payments.push({ channel, energy, organic });
             remainingEnergy -= energy;
             remainingOrganic -= organic;
             if (!remainingEnergy && !remainingOrganic) break;
         }
-        if (remainingEnergy || remainingOrganic) return false;
+        const reserve = this.survival.recovered;
+        if (remainingEnergy > (reserve?.energy ?? 0) || remainingOrganic > (reserve?.organic ?? 0)) return false;
+        if (reserve) {
+            reserve.energy -= remainingEnergy;
+            reserve.organic -= remainingOrganic;
+        }
         for (const { channel, energy, organic } of payments) {
             channel.energy -= energy;
             channel.organic -= organic;
@@ -593,7 +612,19 @@ class Simulation {
         const cell = this.playerCellAt(index);
         if (!cell) return 'Здесь нет твоей клетки';
         if (action === 'delete') {
-            this.drop(cell, 'deficit', 0);
+            const channels = this.neighbors(index).map(site => this.cells.get(site))
+                .filter(neighbor => neighbor?.type === 'channel' && neighbor.colony.family === cell.colony.family);
+            if (channels.length) {
+                for (const channel of channels) {
+                    channel.energy += cell.energy / channels.length;
+                    channel.organic += cell.organic / channels.length;
+                }
+            } else {
+                const reserve = this.survival.recovered ??= { energy: 0, organic: 0 };
+                reserve.energy += cell.energy;
+                reserve.organic += cell.organic;
+            }
+            this.removeCell(cell);
             this.pruneColonies();
             this.updateSurvival();
             return '';
@@ -936,7 +967,7 @@ class Simulation {
                 const parasite = this.parasites.get(site);
                 const cell = this.cells.get(site);
                 for (const victim of [parasite, cell]) {
-                    if (!victim) continue;
+                    if (!victim || victim.colony.family === colony.family) continue;
                     cargo.energy += victim.energy;
                     cargo.organic += victim.organic;
                     this.radiation[site] += DEATH_RADIATION;
@@ -945,6 +976,12 @@ class Simulation {
             }
         }
         this.impactThisTick = true;
+        const occupyingTooth = this.cells.get(index);
+        if (occupyingTooth?.colony.family === colony.family) {
+            cargo.energy += occupyingTooth.energy;
+            cargo.organic += occupyingTooth.organic;
+            this.removeCell(occupyingTooth);
+        }
         this.seed(x, y, colony, cargo);
         this.onDeath?.(index, 'impact', 0);
     }
@@ -1756,6 +1793,12 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const survivalMode = document.querySelector('#survival-mode');
+const autoDonate = document.querySelector('#auto-donate');
+const buildKeys = {
+    KeyQ: 'teeth', KeyE: 'blueTeeth', KeyZ: 'channel', KeyX: 'seed',
+    KeyC: 'organic', KeyV: 'energy', KeyB: 'cleaner', KeyN: 'chlorophyll',
+    KeyM: 'converter', KeyK: 'stomach'
+};
 const cellMenu = document.querySelector('#cell-menu');
 const cellMenuTitle = document.querySelector('#cell-menu-title');
 const cellMenuActions = document.querySelector('#cell-menu-actions');
@@ -1836,6 +1879,7 @@ let worldAudio = null;
 let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
+let fieldPointer = null;
 let press = null;
 let pinch = null;
 let touchGesture = false;
@@ -2358,7 +2402,8 @@ function openCellMenu(index) {
             icon.className = action === 'blueTeeth' ? 'blue-teeth' : action === 'throw' ? 'seed thrown-seed' : action;
             icon.setAttribute('aria-hidden', 'true');
             button.append(icon);
-            const hint = `${label}. ${cellDescriptions[action]}`;
+            const shortcut = Object.keys(buildKeys).find(key => buildKeys[key] === action);
+            const hint = `${label}${shortcut ? ` (${shortcut.slice(3)})` : ''}. ${cellDescriptions[action]}`;
             button.setAttribute('aria-label', hint);
             button.addEventListener('pointerenter', event => {
                 if (event.pointerType !== 'touch') cellMenuHint.textContent = hint;
@@ -2558,10 +2603,16 @@ plantButton.addEventListener('click', () => {
     plant(nearest);
 });
 field.addEventListener('pointermove', event => {
-    if (event.pointerType !== 'touch') hovered = indexAt(event);
+    if (event.pointerType !== 'touch') {
+        fieldPointer = { clientX: event.clientX, clientY: event.clientY };
+        hovered = indexAt(event);
+    }
 });
 field.addEventListener('pointerleave', event => {
-    if (event.pointerType !== 'touch') hovered = -1;
+    if (event.pointerType !== 'touch') {
+        hovered = -1;
+        fieldPointer = null;
+    }
 });
 pause.addEventListener('click', () => setPaused(!paused));
 
@@ -2748,6 +2799,29 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
     cameraKeys.add(event.code);
 });
+window.addEventListener('keydown', event => {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey
+            || event.target.closest?.('input, select, textarea, [contenteditable]')
+            || document.querySelector('dialog[open]')) return;
+    if (event.code === 'Space') {
+        event.preventDefault();
+        if (!pause.disabled) setPaused(!paused);
+        return;
+    }
+    const type = buildKeys[event.code];
+    if (!type || !simulation.survival || simulation.survival.lost || !fieldPointer) return;
+    const index = indexAt(fieldPointer);
+    if (index < 0) return;
+    event.preventDefault();
+    const nearby = simulation.neighbors(index).some(site => simulation.playerCellAt(site)?.type === 'channel');
+    const thrown = type === 'seed' && !nearby;
+    const error = thrown ? simulation.throwPlayerSeed(index) : simulation.buildPlayerCell(index, type);
+    gameStatus.textContent = error || (thrown ? 'Семечко брошено' : type === 'seed' ? 'Семечко посажено' : 'Клетка построена');
+    hovered = index;
+    draw();
+    updateReadout();
+});
+
 window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
@@ -2781,6 +2855,9 @@ function applyGame(nextSimulation) {
 
 function updateGameControls() {
     const survival = simulation.survival;
+    autoDonate.hidden = !survival;
+    autoDonate.disabled = Boolean(survival?.lost);
+    autoDonate.setAttribute('aria-pressed', String(Boolean(survival?.autoDonate)));
     survivalMode.textContent = survival ? 'Вернуться в песочницу' : 'Начать выживание';
     for (const input of [seedPack, seedRadius, mapTool]) input.closest('label').hidden = Boolean(survival);
     plantButton.hidden = Boolean(survival);
@@ -2824,6 +2901,12 @@ function restart(width, survival = Boolean(simulation.survival)) {
     updateReadout();
 }
 
+autoDonate.addEventListener('click', () => {
+    simulation.survival.autoDonate = !simulation.survival.autoDonate;
+    updateGameControls();
+    gameStatus.textContent = simulation.survival.autoDonate
+        ? 'Связанные каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
+});
 survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
 document.querySelector('#save-game').addEventListener('click', () => {
     try {

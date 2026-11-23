@@ -244,7 +244,7 @@ export class Simulation {
                         || visited.has(neighbor)) continue;
                 visited.add(neighbor);
                 queue.push(neighbor);
-                if (neighbor.constructionDonor) sources.push(neighbor);
+                if (this.survival.autoDonate || neighbor.constructionDonor) sources.push(neighbor);
             }
         }
 
@@ -252,14 +252,19 @@ export class Simulation {
         let remainingOrganic = cost.organic;
         const payments = [];
         for (const channel of sources) {
-            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP));
-            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP));
+            const energy = Math.min(remainingEnergy, Math.max(0, channel.energy - ENERGY_UPKEEP * STEP * 2));
+            const organic = Math.min(remainingOrganic, Math.max(0, channel.organic - ORGANIC_UPKEEP * STEP * 2));
             payments.push({ channel, energy, organic });
             remainingEnergy -= energy;
             remainingOrganic -= organic;
             if (!remainingEnergy && !remainingOrganic) break;
         }
-        if (remainingEnergy || remainingOrganic) return false;
+        const reserve = this.survival.recovered;
+        if (remainingEnergy > (reserve?.energy ?? 0) || remainingOrganic > (reserve?.organic ?? 0)) return false;
+        if (reserve) {
+            reserve.energy -= remainingEnergy;
+            reserve.organic -= remainingOrganic;
+        }
         for (const { channel, energy, organic } of payments) {
             channel.energy -= energy;
             channel.organic -= organic;
@@ -279,7 +284,19 @@ export class Simulation {
         const cell = this.playerCellAt(index);
         if (!cell) return 'Здесь нет твоей клетки';
         if (action === 'delete') {
-            this.drop(cell, 'deficit', 0);
+            const channels = this.neighbors(index).map(site => this.cells.get(site))
+                .filter(neighbor => neighbor?.type === 'channel' && neighbor.colony.family === cell.colony.family);
+            if (channels.length) {
+                for (const channel of channels) {
+                    channel.energy += cell.energy / channels.length;
+                    channel.organic += cell.organic / channels.length;
+                }
+            } else {
+                const reserve = this.survival.recovered ??= { energy: 0, organic: 0 };
+                reserve.energy += cell.energy;
+                reserve.organic += cell.organic;
+            }
+            this.removeCell(cell);
             this.pruneColonies();
             this.updateSurvival();
             return '';
@@ -622,7 +639,7 @@ export class Simulation {
                 const parasite = this.parasites.get(site);
                 const cell = this.cells.get(site);
                 for (const victim of [parasite, cell]) {
-                    if (!victim) continue;
+                    if (!victim || victim.colony.family === colony.family) continue;
                     cargo.energy += victim.energy;
                     cargo.organic += victim.organic;
                     this.radiation[site] += DEATH_RADIATION;
@@ -631,6 +648,12 @@ export class Simulation {
             }
         }
         this.impactThisTick = true;
+        const occupyingTooth = this.cells.get(index);
+        if (occupyingTooth?.colony.family === colony.family) {
+            cargo.energy += occupyingTooth.energy;
+            cargo.organic += occupyingTooth.organic;
+            this.removeCell(occupyingTooth);
+        }
         this.seed(x, y, colony, cargo);
         this.onDeath?.(index, 'impact', 0);
     }

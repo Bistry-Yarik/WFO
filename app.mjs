@@ -23,6 +23,12 @@ const seedPack = document.querySelector('#seed-pack');
 const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const survivalMode = document.querySelector('#survival-mode');
+const autoDonate = document.querySelector('#auto-donate');
+const buildKeys = {
+    KeyQ: 'teeth', KeyE: 'blueTeeth', KeyZ: 'channel', KeyX: 'seed',
+    KeyC: 'organic', KeyV: 'energy', KeyB: 'cleaner', KeyN: 'chlorophyll',
+    KeyM: 'converter', KeyK: 'stomach'
+};
 const cellMenu = document.querySelector('#cell-menu');
 const cellMenuTitle = document.querySelector('#cell-menu-title');
 const cellMenuActions = document.querySelector('#cell-menu-actions');
@@ -103,6 +109,7 @@ let worldAudio = null;
 let simulation = new Simulation(Math.random, recordDeath, readLimits());
 let paused = false;
 let hovered = -1;
+let fieldPointer = null;
 let press = null;
 let pinch = null;
 let touchGesture = false;
@@ -625,7 +632,8 @@ function openCellMenu(index) {
             icon.className = action === 'blueTeeth' ? 'blue-teeth' : action === 'throw' ? 'seed thrown-seed' : action;
             icon.setAttribute('aria-hidden', 'true');
             button.append(icon);
-            const hint = `${label}. ${cellDescriptions[action]}`;
+            const shortcut = Object.keys(buildKeys).find(key => buildKeys[key] === action);
+            const hint = `${label}${shortcut ? ` (${shortcut.slice(3)})` : ''}. ${cellDescriptions[action]}`;
             button.setAttribute('aria-label', hint);
             button.addEventListener('pointerenter', event => {
                 if (event.pointerType !== 'touch') cellMenuHint.textContent = hint;
@@ -825,10 +833,16 @@ plantButton.addEventListener('click', () => {
     plant(nearest);
 });
 field.addEventListener('pointermove', event => {
-    if (event.pointerType !== 'touch') hovered = indexAt(event);
+    if (event.pointerType !== 'touch') {
+        fieldPointer = { clientX: event.clientX, clientY: event.clientY };
+        hovered = indexAt(event);
+    }
 });
 field.addEventListener('pointerleave', event => {
-    if (event.pointerType !== 'touch') hovered = -1;
+    if (event.pointerType !== 'touch') {
+        hovered = -1;
+        fieldPointer = null;
+    }
 });
 pause.addEventListener('click', () => setPaused(!paused));
 
@@ -1015,6 +1029,29 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
     cameraKeys.add(event.code);
 });
+window.addEventListener('keydown', event => {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey
+            || event.target.closest?.('input, select, textarea, [contenteditable]')
+            || document.querySelector('dialog[open]')) return;
+    if (event.code === 'Space') {
+        event.preventDefault();
+        if (!pause.disabled) setPaused(!paused);
+        return;
+    }
+    const type = buildKeys[event.code];
+    if (!type || !simulation.survival || simulation.survival.lost || !fieldPointer) return;
+    const index = indexAt(fieldPointer);
+    if (index < 0) return;
+    event.preventDefault();
+    const nearby = simulation.neighbors(index).some(site => simulation.playerCellAt(site)?.type === 'channel');
+    const thrown = type === 'seed' && !nearby;
+    const error = thrown ? simulation.throwPlayerSeed(index) : simulation.buildPlayerCell(index, type);
+    gameStatus.textContent = error || (thrown ? 'Семечко брошено' : type === 'seed' ? 'Семечко посажено' : 'Клетка построена');
+    hovered = index;
+    draw();
+    updateReadout();
+});
+
 window.addEventListener('keyup', event => cameraKeys.delete(event.code));
 window.addEventListener('blur', () => cameraKeys.clear());
 
@@ -1048,6 +1085,9 @@ function applyGame(nextSimulation) {
 
 function updateGameControls() {
     const survival = simulation.survival;
+    autoDonate.hidden = !survival;
+    autoDonate.disabled = Boolean(survival?.lost);
+    autoDonate.setAttribute('aria-pressed', String(Boolean(survival?.autoDonate)));
     survivalMode.textContent = survival ? 'Вернуться в песочницу' : 'Начать выживание';
     for (const input of [seedPack, seedRadius, mapTool]) input.closest('label').hidden = Boolean(survival);
     plantButton.hidden = Boolean(survival);
@@ -1091,6 +1131,12 @@ function restart(width, survival = Boolean(simulation.survival)) {
     updateReadout();
 }
 
+autoDonate.addEventListener('click', () => {
+    simulation.survival.autoDonate = !simulation.survival.autoDonate;
+    updateGameControls();
+    gameStatus.textContent = simulation.survival.autoDonate
+        ? 'Связанные каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
+});
 survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
 document.querySelector('#save-game').addEventListener('click', () => {
     try {
