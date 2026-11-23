@@ -229,22 +229,29 @@ export class Simulation {
     }
 
     constructionCostMessage({ energy, organic }) {
-        return `Нужно ⚡ ${energy} / орг. ${organic}. Можно выделить запасы из других связанных каналов`;
+        return `Нужно ⚡ ${energy} / орг. ${organic}. Включи «Авторесурсы» или отметь связанный канал`;
     }
 
     fundPlayerConstruction(channels, cost) {
         const sources = [...channels];
         const visited = new Set(sources);
-        // Explore the connected network, but only draw from explicitly marked remote channels.
-        const queue = [...sources];
-        for (const channel of queue) {
-            for (const index of this.neighbors(channel.index)) {
-                const neighbor = this.cells.get(index);
-                if (neighbor?.type !== 'channel' || neighbor.colony.family !== channel.colony.family
-                        || visited.has(neighbor)) continue;
-                visited.add(neighbor);
-                queue.push(neighbor);
-                if (this.survival.autoDonate || neighbor.constructionDonor) sources.push(neighbor);
+        if (this.survival.autoDonate) {
+            for (const channel of this.cells.values()) {
+                if (channel.type === 'channel' && channel.colony.family === this.survival.family && !visited.has(channel)) {
+                    sources.push(channel);
+                }
+            }
+        } else {
+            const queue = [...sources];
+            for (const channel of queue) {
+                for (const index of this.neighbors(channel.index)) {
+                    const neighbor = this.cells.get(index);
+                    if (neighbor?.type !== 'channel' || neighbor.colony.family !== channel.colony.family
+                            || visited.has(neighbor)) continue;
+                    visited.add(neighbor);
+                    queue.push(neighbor);
+                    if (neighbor.constructionDonor) sources.push(neighbor);
+                }
             }
         }
 

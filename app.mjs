@@ -855,10 +855,10 @@ function sizeView() {
     const width = Math.max(1, viewport.clientWidth);
     const height = Math.max(1, viewport.clientHeight);
     if (field.width === width && field.height === height) return;
-    moveCameraByScreen((field.width - width) / 2, (field.height - height) / 2);
     field.width = width;
     field.height = height;
     screen.imageSmoothingEnabled = false;
+    if (terrainPixels) draw();
 }
 
 function setZoom(value, anchorX = field.width / 2, anchorY = field.height / 2) {
@@ -944,26 +944,33 @@ function updateFullscreen() {
     fullscreen.setAttribute('aria-pressed', String(expanded));
 }
 
+let fullscreenPending = false;
+
 async function toggleFullscreen() {
-    if (document.fullscreenElement === fieldPanel) {
-        await document.exitFullscreen();
-    } else if (fieldPanel.classList.contains('is-expanded')) {
-        fieldPanel.classList.remove('is-expanded');
-    } else {
-        fieldPanel.classList.add('is-expanded');
-        updateFullscreen();
-        try {
-            await fieldPanel.requestFullscreen();
-            if (fieldPanel.classList.contains('is-expanded')) {
-                fieldPanel.classList.remove('is-expanded');
-            } else if (document.fullscreenElement === fieldPanel) {
-                await document.exitFullscreen();
+    if (fullscreenPending) return;
+    fullscreenPending = true;
+    try {
+        const expanded = fieldPanel.classList.contains('is-expanded');
+        if (typeof window.wfoNativeFullscreen === 'function') {
+            await window.wfoNativeFullscreen(!expanded);
+            fieldPanel.classList.toggle('is-expanded', !expanded);
+        } else if (document.fullscreenElement === fieldPanel) {
+            await document.exitFullscreen();
+        } else if (expanded) {
+            fieldPanel.classList.remove('is-expanded');
+        } else {
+            try {
+                await fieldPanel.requestFullscreen();
+            } catch {
+                fieldPanel.classList.add('is-expanded');
             }
-        } catch {
-            // The expanded view works even when the browser blocks native fullscreen.
         }
+    } catch {
+        gameStatus.textContent = 'Не удалось переключить полноэкранный режим';
+    } finally {
+        fullscreenPending = false;
+        updateFullscreen();
     }
-    updateFullscreen();
 }
 
 function recordBirth(index) {
@@ -1135,7 +1142,7 @@ autoDonate.addEventListener('click', () => {
     simulation.survival.autoDonate = !simulation.survival.autoDonate;
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
-        ? 'Связанные каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
+        ? 'Все твои каналы автоматически выделяют ресурсы' : 'Автовыделение ресурсов отключено';
 });
 survivalMode.addEventListener('click', () => restart(simulation.width, !simulation.survival));
 document.querySelector('#save-game').addEventListener('click', () => {
