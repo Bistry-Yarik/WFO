@@ -616,7 +616,7 @@ function openCellMenu(index) {
     cellMenuHint.textContent = '';
     cellMenuActions.classList.toggle('cell-icons', !owned);
     const choices = owned
-        ? [['delete', 'Удалить'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
+        ? [['delete', 'Удалить (Backspace)'], ['boost', 'Ускорить в 2 раза на 30 с · 500 энергии']]
         : (occupied ? ['teeth', 'blueTeeth'] : Object.keys(names).filter(type => type !== 'adaptive'))
             .map(type => [type, names[type]]);
     if (owned?.type === 'channel') {
@@ -1050,11 +1050,23 @@ window.addEventListener('keydown', event => {
         if (!pause.disabled) setPaused(!paused);
         return;
     }
+    const deleting = event.code === 'Backspace';
     const type = buildKeys[event.code];
-    if (!type || !simulation.survival || simulation.survival.lost || !fieldPointer) return;
+    if ((!type && !deleting) || !simulation.survival || simulation.survival.lost || !fieldPointer) return;
     const index = indexAt(fieldPointer);
     if (index < 0) return;
     event.preventDefault();
+    if (deleting) {
+        if (!simulation.playerCellAt(index)) return;
+        if (simulation.managePlayerCell(index, 'delete')) return;
+        gameStatus.textContent = 'Клетка удалена';
+        if (simulation.survival.lost) setPaused(true);
+        updateGameControls();
+        hovered = index;
+        draw();
+        updateReadout();
+        return;
+    }
     const nearby = simulation.neighbors(index).some(site => simulation.playerCellAt(site)?.type === 'channel');
     const thrown = type === 'seed' && !nearby;
     const error = thrown ? simulation.throwPlayerSeed(index) : simulation.buildPlayerCell(index, type);
