@@ -791,7 +791,78 @@ function touchPair() {
     };
 }
 
+const algaeChat = document.querySelector('#algae-chat');
+const algaeChatLog = document.querySelector('#algae-chat-log');
+const algaeChatTitle = document.querySelector('#algae-chat-title');
+const algaeChatActions = document.querySelector('#algae-chat-actions');
+const algaeReplies = new Map();
+let chatFamily = null;
+let renderedChat = '';
+let chatCanClick = false;
+
+function renderAlgaeChat() {
+    if (!algaeChat.open) return;
+    const entries = simulation.algaeMessages.filter(message => message.from === chatFamily || message.to === chatFamily)
+        .map(({ from, to, text }) => {
+            const direct = to === simulation.survival?.family;
+            return { text: `Род ${from} → ${direct ? 'тебе' : `род ${to}`}: ${text}`, direct };
+        });
+    entries.push(...(algaeReplies.get(chatFamily) ?? []));
+    const signature = JSON.stringify(entries);
+    if (signature === renderedChat) return;
+    renderedChat = signature;
+    algaeChatLog.replaceChildren(...entries.map(({ text, direct }) => {
+        const line = document.createElement('p');
+        line.className = direct ? 'to-player' : 'between-algae';
+        line.textContent = text;
+        return line;
+    }));
+    algaeChatLog.scrollTop = algaeChatLog.scrollHeight;
+}
+
+function openAlgaeChat(index) {
+    const cell = simulation.cells.get(index);
+    if (!cell || document.querySelector('dialog[open]')) return false;
+    chatFamily = cell.colony.family;
+    algaeChatTitle.textContent = `Водоросль · род ${chatFamily}`;
+    renderedChat = '';
+    chatCanClick = false;
+    algaeChat.showModal();
+    renderAlgaeChat();
+    return true;
+}
+
+function recordAlgaeReply(family, reply) {
+    if (!algaeReplies.has(family) && algaeReplies.size >= 32) algaeReplies.delete(algaeReplies.keys().next().value);
+    const history = algaeReplies.get(family) ?? [];
+    history.push({ text: reply, direct: true });
+    if (history.length > 24) history.shift();
+    algaeReplies.set(family, history);
+    renderAlgaeChat();
+}
+
+algaeChat.addEventListener('pointerdown', () => { chatCanClick = true; });
+algaeChat.addEventListener('click', event => {
+    if (event.detail && !chatCanClick) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+    chatCanClick = false;
+}, true);
+
+algaeChatActions.addEventListener('click', event => {
+    const button = event.target.closest('button[data-question]');
+    if (!button) return;
+    const { question } = button.dataset;
+    if (roomPeer && !roomHost) {
+        if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question });
+    } else {
+        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question));
+    }
+});
+
 function startPinch() {
+    clearTimeout(press?.chatTimer);
     pinch = { ...touchPair(), zoom: camera.zoom };
     touchGesture = true;
     press = null;
@@ -829,6 +900,17 @@ if ('PointerEvent' in window) {
             dragging: rightDrag || rotating, canPlant, rotating, paintTool,
             visited: paintTool ? new Set() : null };
         field.setPointerCapture(event.pointerId);
+        if (event.pointerType === 'touch') {
+            const gesture = press;
+            press.chatTimer = setTimeout(() => {
+                if (press !== gesture || gesture.dragging || touchPointers.size !== 1) return;
+                const index = indexAt({ clientX: gesture.x, clientY: gesture.y });
+                if (openAlgaeChat(index)) {
+                    press = null;
+                    lastTap = { x: gesture.x, y: gesture.y, time: performance.now() };
+                }
+            }, 520);
+        }
     });
     field.addEventListener('pointermove', event => {
         if (touchPointers.has(event.pointerId)) {
@@ -851,6 +933,7 @@ if ('PointerEvent' in window) {
         const dx = event.clientX - press.x;
         const dy = event.clientY - press.y;
         if (!press.dragging && Math.hypot(dx, dy) <= (press.paintTool ? 4 : 10)) return;
+        clearTimeout(press.chatTimer);
         if (press.rotating) {
             if (rotationEnabled.checked) rotateWithMouse(press.x, press.y, event.clientX, event.clientY);
         } else if (press.paintTool) {
@@ -860,6 +943,7 @@ if ('PointerEvent' in window) {
     });
     field.addEventListener('pointerup', event => {
         if (releaseTouch(event) || event.pointerId !== press?.id) return;
+        clearTimeout(press.chatTimer);
         if (press.paintTool && press.dragging) {
             paintStroke(press.x, press.y, event, press.paintTool, press.visited);
         }
@@ -870,7 +954,10 @@ if ('PointerEvent' in window) {
     });
     const cancelPointer = event => {
         releaseTouch(event);
-        if (event.pointerId === press?.id) press = null;
+        if (event.pointerId === press?.id) {
+            clearTimeout(press.chatTimer);
+            press = null;
+        }
     };
     field.addEventListener('pointercancel', cancelPointer);
     field.addEventListener('lostpointercapture', cancelPointer);
@@ -879,7 +966,7 @@ if ('PointerEvent' in window) {
 field.addEventListener('contextmenu', event => event.preventDefault());
 field.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
 field.addEventListener('click', event => {
-    if (touchGesture) return;
+    if (touchGesture || algaeChat.open) return;
     if (lastTap && performance.now() - lastTap.time < 500
             && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 12) return;
     useMapTool(event);
@@ -1122,6 +1209,10 @@ window.addEventListener('keydown', event => {
         if (!pause.disabled) setPaused(!paused);
         return;
     }
+    if (event.code === 'KeyT' && fieldPointer) {
+        if (openAlgaeChat(indexAt(fieldPointer))) event.preventDefault();
+        return;
+    }
     const deleting = event.code === 'Backspace';
     const type = buildKeys[event.code];
     if ((!type && !deleting) || !simulation.survival || simulation.survival.lost || !fieldPointer) return;
@@ -1163,6 +1254,7 @@ function resetSpeedSample() {
 speed.addEventListener('change', resetSpeedSample);
 document.addEventListener('visibilitychange', resetSpeedSample);
 function applyGame(nextSimulation) {
+    algaeReplies.clear();
     deathEffects.clear();
     simulation = nextSimulation;
     if (worldAudio) {
@@ -1485,7 +1577,13 @@ function receiveGuest(connection, packet) {
         return;
     }
     const guest = roomGuests.get(connection);
-    if (!guest || guest.lost) return;
+    if (!guest) return;
+    if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family)
+            && ['hello', 'size', 'danger'].includes(packet.question)) {
+        connection.send({ kind: 'chat', family: packet.family, reply: simulation.talkToAlgae(packet.family, packet.question) });
+        return;
+    }
+    if (guest.lost) return;
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
         return;
@@ -1530,6 +1628,8 @@ async function receiveHost(connection, packet) {
         showVersionMismatch(packet.version, connection);
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
+    } else if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family) && typeof packet.reply === 'string') {
+        recordAlgaeReply(packet.family, packet.reply);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {
@@ -2019,6 +2119,7 @@ function frame(now) {
     if ((!boosted && multiplier <= 100) || cameraKeys.size || press || pinch || now - lastDraw >= drawInterval) {
         draw(!paused && multiplier >= BOOST_SPEED);
         updateReadout();
+        renderAlgaeChat();
         lastDraw = now;
     }
     requestAnimationFrame(frame);

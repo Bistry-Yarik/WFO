@@ -211,3 +211,19 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .save-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
 .save-confirmation { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
 #save-list [hidden] { display: none; }
+
+#algae-chat {
+    width: min(440px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    color: inherit;
+    background: #182720;
+    border: 1px solid #415a4d;
+    border-radius: 10px;
+    padding: 16px;
+}
+#algae-chat::backdrop { background: #08130db3; }
+#algae-chat-log { max-height: 36dvh; overflow-y: auto; margin: 8px 0; font-size: 14px; }
+#algae-chat-log p { margin: 6px 0; }
+#algae-chat-log .to-player { color: #fff; }
+#algae-chat-log .between-algae { color: #a5aaa8; }
+#algae-chat-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }

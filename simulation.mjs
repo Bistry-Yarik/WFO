@@ -156,6 +156,7 @@ export class Simulation {
         this.aiEnabled = false;
         this.familySizes = new Map();
         this.familySignals = new Map();
+        this.algaeMessages = [];
         this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
@@ -367,7 +368,7 @@ export class Simulation {
         return {
             version: 1, width: this.width, limits: this.limits, time: this.time,
             totalSeeds: this.totalSeeds, mutations: this.mutations, overloads: this.overloads,
-            survival: this.survival, aiEnabled: this.aiEnabled,
+            survival: this.survival, aiEnabled: this.aiEnabled, algaeMessages: this.algaeMessages,
             energy: Array.from(this.energy), organic: Array.from(this.organic), radiation: Array.from(this.radiation),
             colonies: Array.from(this.colonies.values()), cells: serialize(this.cells), parasites: serialize(this.parasites)
         };
@@ -398,6 +399,7 @@ export class Simulation {
         for (const key of ['time', 'totalSeeds', 'mutations', 'overloads', 'survival']) world[key] = save[key];
         world.pruneColonies();
         world.setAdaptiveAI(save.aiEnabled === true);
+        world.algaeMessages = Array.isArray(save.algaeMessages) ? save.algaeMessages.slice(-64) : [];
         return world;
     }
 
@@ -894,6 +896,21 @@ export class Simulation {
         }
     }
 
+    talkToAlgae(family, question) {
+        if (!this.families.has(family)) return 'Эта водоросль исчезла.';
+        if (!this.aiEnabled) return 'Включи «ИИ водорослей», чтобы они могли отвечать.';
+        if (question === 'size') {
+            const count = this.familySizes.get(family) ?? 1;
+            return `Наш размер — ${count} клеток.`;
+        }
+        if (question === 'danger') {
+            return (this.familySignals.get(family) ?? 0) > this.time
+                ? 'У границы замечена колония крупнее нас. Ищем другой путь.'
+                : 'Сейчас тревожных сигналов на нашей границе нет.';
+        }
+        return 'Мы тебя слышим. Будем искать воду с доступными ресурсами.';
+    }
+
     aiGrowthScore(index, family, aggressive) {
         const size = this.familySizes.get(family) ?? 1;
         let score = this.isSeedSiteSafe(index) ? 0 : -100;
@@ -906,6 +923,10 @@ export class Simulation {
             const rivalSize = this.familySizes.get(rival) ?? 1;
             if (rivalSize > size) {
                 // A border channel broadcasts an alarm for nearby families to read.
+                if ((this.familySignals.get(family) ?? 0) <= this.time) {
+                    this.algaeMessages.push({ from: family, to: rival, text: 'Мы заметили вас у границы.' });
+                    if (this.algaeMessages.length > 64) this.algaeMessages.shift();
+                }
                 this.familySignals.set(family, this.time + 4);
                 score -= 3 + Math.min(3, rivalSize / size);
             } else {
