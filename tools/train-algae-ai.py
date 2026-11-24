@@ -1,0 +1,82 @@
+"""Train WFO's small Russian dialogue intent model. Requires NumPy."""
+import base64
+import json
+import re
+from pathlib import Path
+
+import numpy as np
+
+
+CORPUS = {
+    "greeting": "привет|приветики|здравствуйте|доброго дня|добрый вечер|хай|салют|здорово ребята|доброе утро|как дела водоросль|хелло|hello",
+    "size": "сколько у вас клеток|какой у вас размер|насколько вы большие|ваша численность|сколько вас|сколько клеток в роду|размер колонии|назови число клеток|много ли вас|какая у тебя площадь|сколько пикселей занимает колония|вы большая водоросль",
+    "radiation": "какая здесь радиация|нет ли у вас проблем с радиацией в воде|тут радиоактивно|фонит ли вода|сколько рад рядом|что с облучением|опасно ли тут из за радиации|сколько радиации в воде|как сильное облучение|здесь зараженная вода|тебе мешает радиация|радиоактивный фон|это чернобыль|пора ли ставить очиститель",
+    "water": "сколько ресурсов вокруг|какая вода рядом|есть ли ресурсы в воде|сколько энергии и органики в воде|что есть в воде|вода бедная или богатая|у вас вокруг много органики|можно ли тут собрать ресурсы|в воде есть электричество|что тут можно собирать|проверь запасы в воде|какая концентрация ресурсов в воде",
+    "energy": "сколько у этой клетки энергии|сколько энергии в канале|хватает ли вам электричества|какой запас энергии у клетки|покажи энергию|энергия в выбранной клетке|ресурс электричество|у вас есть заряд|почему мало энергии|сколько у тебя электричества|что с вашим запасом энергии|каналу не хватает енергии",
+    "organic": "сколько органики в клетке|сколько мяса в канале|хватает ли вам еды|какой запас органики|у вас много мяса|у клетки осталась органика|покажи органику в выбранном канале|что у вас с едой|почему вам не хватает мяса|вам хватает еды|в этой клетке сколько органики|органика в выбранной клетке",
+    "neighbors": "кто у вас рядом|что у границы|видите ли врага|кто ваши соседи|что происходит рядом с вами|там вражеская колония|у вас есть соседи|кто на границе|опасно ли у границы|почему обходите соседей|вас кто-то окружил|враг около вашей колонии|видно ли рядом другие семейства",
+    "chlorophyll": "используйте больше хлорофиллов|больше хлорофилов|советую использовать больше хлорофилов|вода везде одинакова советую использовать больше хлорофилов|вам нужно больше хлорофилла|сколько у вас хлорофиллов|могу посоветовать вырастить хлорофилл|как работает хлорофилл|зачем вам зеленые ромбики|где ваши хлорофилы|а вы хлорофил ставите|поставь больше хф",
+    "growth": "куда вы растёте|почему растёшь в эту сторону|что будете строить дальше|куда планируете расширяться|как вы выбираете направление|смените направление роста|почему вы полезли сюда|почему не растёте|как рост идёт|куда движется ваша колония|как вы растете|планы на расширение",
+    "light": "сейчас день или ночь|что делаете ночью|что происходит когда солнце садится|у вас светло или темно|ночная выработка|как вы живёте в темноте|солнце светит|можно ли расти ночью|а ночью что|уже утро или пока ночь|когда есть свет|ночь как влияет на растения",
+    "peace": "давай жить мирно|можно договориться|я не враг|не атакуйте меня|давай дружить|заключим перемирие|оставьте нас в покое|можно мир|больше не воюем|я предлагаю союз|прошу не стрелять|не нападай пожалуйста",
+    "unknown": "сколько стоит телевизор|какая погода в москве|расскажи анекдот|как приготовить суп|я пошел спать|что такое квантовый компьютер|как тебя зовут|поговорим о футболе|включи музыку|напиши стихотворение|я не знаю что спросить|проверь мой счет в банке|гениально|тест тест",
+}
+
+FEATURES = 768
+HIDDEN = 32
+
+
+def encode(text):
+    result = np.zeros(FEATURES, dtype=np.float32)
+    for word in re.findall(r"[a-zа-яё0-9]+", text.lower().replace("ё", "е")):
+        chars = "^" + word + "$"
+        for fragment in [chars, *(chars[i:i+n] for n in (2, 3) for i in range(len(chars) - n + 1))]:
+            seed = 5381
+            for char in fragment:
+                seed = ((seed * 33) ^ ord(char)) & 0xffffffff
+            result[seed % FEATURES] += 1
+    return result / max(1, np.linalg.norm(result))
+
+
+def packed(matrix):
+    scale = float(np.max(np.abs(matrix))) / 127
+    quantized = np.rint(matrix / scale).astype(np.int8)
+    return {"scale": scale, "bytes": base64.b64encode(quantized.tobytes()).decode()}
+
+
+def main():
+    rng = np.random.default_rng(74)
+    samples = [(index, text) for index, examples in enumerate(CORPUS.values()) for text in examples.split("|")]
+    x = np.array([encode(text) for _, text in samples])
+    labels = np.array([index for index, _ in samples])
+    y = np.eye(len(CORPUS), dtype=np.float32)[labels]
+    params = [rng.normal(0, .10, (FEATURES, HIDDEN)).astype(np.float32), np.zeros(HIDDEN, np.float32),
+              rng.normal(0, .10, (HIDDEN, len(CORPUS))).astype(np.float32), np.zeros(len(CORPUS), np.float32)]
+    moving = [np.zeros_like(p) for p in params]
+    squares = [np.zeros_like(p) for p in params]
+    for step in range(1, 501):
+        w, b, v, c = params
+        # Mask random features so alternate spellings cannot rely on a single match.
+        batch = x * (rng.random(x.shape) > .12)
+        h = np.tanh(batch @ w + b)
+        logits = h @ v + c
+        probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs /= probs.sum(axis=1, keepdims=True)
+        delta = (probs - y) / len(y)
+        hidden_delta = (delta @ v.T) * (1 - h*h)
+        gradients = [batch.T @ hidden_delta, hidden_delta.sum(0), h.T @ delta, delta.sum(0)]
+        for p, m, s, g in zip(params, moving, squares, gradients):
+            m[:] = .9*m + .1*g
+            s[:] = .999*s + .001*g*g
+            p -= .012 * (m / (1 - .9**step)) / (np.sqrt(s / (1 - .999**step)) + 1e-8)
+    payload = {
+        "features": FEATURES, "hidden": HIDDEN, "topics": list(CORPUS),
+        "parameters": [packed(p) for p in params],
+    }
+    output = Path(__file__).resolve().parent.parent / "algae-ai-weights.mjs"
+    output.write_text("// Generated by tools/train-algae-ai.py.\nexport const algaeAIWeights = "
+                      + json.dumps(payload, separators=(",", ":")) + ";\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

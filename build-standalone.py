@@ -9,6 +9,10 @@ html = page.read_text(encoding="utf-8")
 css = (root / "style.css").read_text(encoding="utf-8").rstrip()
 model = (root / "simulation.mjs").read_text(encoding="utf-8").rstrip()
 audio = (root / "audio.mjs").read_text(encoding="utf-8").rstrip()
+ai_weights = (root / "algae-ai-weights.mjs").read_text(encoding="utf-8").rstrip()
+ai = (root / "algae-ai.mjs").read_text(encoding="utf-8").rstrip()
+ai_weights = re.sub(r"^export ", "", ai_weights, flags=re.MULTILINE)
+ai = re.sub(r"^import .*\n|^export ", "", ai, flags=re.MULTILINE).lstrip()
 app = (root / "app.mjs").read_text(encoding="utf-8").rstrip()
 model = re.sub(r"^export ", "", model, flags=re.MULTILINE)
 audio = re.sub(r"^export ", "", audio, flags=re.MULTILINE)
@@ -18,7 +22,7 @@ for pattern, content in [
     (r'<link rel="stylesheet" href="style\.css">|<style id="wfo-style">.*?</style>',
      f'<style id="wfo-style">\n{css}\n</style>'),
     (r'<script type="module" src="app\.mjs"></script>|<script id="wfo-code">.*?</script>',
-     f'<script id="wfo-code">\n(() => {{\n"use strict";\n{model}\n\n{audio}\n\n{app}\n}})();\n</script>'),
+     f'<script id="wfo-code">\n(() => {{\n"use strict";\n{model}\n\n{audio}\n\n{ai_weights}\n\n{ai}\n\n{app}\n}})();\n</script>'),
 ]:
     html, changed = re.subn(pattern, lambda _: content, html, count=1, flags=re.DOTALL)
     if changed != 1:
