@@ -231,3 +231,5 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #algae-chat-compose { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 #algae-chat-input { flex: 1 1 12em; min-width: 0; padding: 7px; font: inherit; }
 #algae-chat-log .from-player { color: #a4ecc0; }
+#algae-model-status { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+#algae-model-status:empty { display: none; }

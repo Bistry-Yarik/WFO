@@ -900,25 +900,102 @@ algaeChat.addEventListener('click', event => {
     chatCanClick = false;
 }, true);
 
-function sendAlgaeMessage(question, label) {
-    recordAlgaeReply(chatFamily, label, chatIndex, true);
-    if (roomPeer && !roomHost) {
-        if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question, index: chatIndex });
-    } else {
-        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question, chatIndex), chatIndex);
+const algaeModelStatus = document.querySelector('#algae-model-status');
+const algaeModelPrompt = `Ты говоришь от имени вымышленной колонии водорослей в игре WFO.
+Отвечай естественно и кратко по-русски. Учитывай предшествующий диалог.
+Игровое состояние для текущего вопроса приведено отдельно. Используй только факты из него.
+Поле water3x3 описывает воду около выбранной клетки, а не всю карту.
+Хлорофилл вырабатывает энергию даже ночью. Очиститель вырабатывает энергию и немного органики из радиации.
+Ты можешь обсудить предложения игрока, но не меняешь карту, геном или правила перепиской.
+Если чего-то не знаешь, скажи об этом. Дай один ответ без подписи и Markdown.`;
+let algaeInferencePending = false;
+
+async function runAlgaeModel(messages) {
+    if (await window.LanguageModel?.availability?.().catch(() => '') === 'available') {
+        let session;
+        try {
+            session = await window.LanguageModel.create({
+                initialPrompts: messages.slice(0, -1)
+            });
+            return await session.prompt(messages.at(-1).content);
+        } catch {
+            // Fall through to the local Ollama installation if the browser model cannot answer.
+        } finally {
+            session?.destroy();
+        }
+    }
+    if (typeof window.wfoStartAlgaeInference === 'function') {
+        await window.wfoStartAlgaeInference(messages);
+        for (;;) {
+            const result = await window.wfoPollAlgaeInference();
+            if (result?.error) throw new Error(result.error);
+            if (result?.text) return result.text;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
+    const endpoint = 'http://127.0.0.1:11434';
+    const signal = AbortSignal.timeout(90_000);
+    const inventory = await fetch(endpoint + '/api/tags', { signal, redirect: 'error' });
+    if (!inventory.ok) throw new Error('Ollama недоступна');
+    const { models } = await inventory.json();
+    const installed = models?.filter(entry => entry.size > 0 && !entry.remote_host && !/cloud/i.test(entry.name));
+    const model = installed?.find(entry => /^qwen/i.test(entry.name)) ?? installed?.[0];
+    if (!model) throw new Error('В Ollama нет установленной модели');
+    const response = await fetch(endpoint + '/api/chat', {
+        method: 'POST', signal, redirect: 'error',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model.name, messages, stream: false, options: { num_predict: 160 } })
+    });
+    if (!response.ok) throw new Error('Ollama не смогла ответить');
+    const result = await response.json();
+    return result.message?.content;
+}
+
+async function sendAlgaeMessage(label) {
+    if (algaeInferencePending) return;
+    const world = simulation;
+    const room = roomPeer;
+    const family = chatFamily;
+    const index = chatIndex;
+    const context = world.algaeChatContext(family, index);
+    if (!world.aiEnabled || !context) {
+        algaeModelStatus.textContent = world.aiEnabled ? 'Выбранная клетка исчезла' : 'Включи «ИИ водорослей»';
+        return;
+    }
+    const previous = (algaeReplies.get(family) ?? []).slice(-8);
+    const messages = [
+        { role: 'system', content: algaeModelPrompt },
+        ...previous.map(message => ({ role: message.outgoing ? 'user' : 'assistant', content: message.text })),
+        { role: 'user', content: `Состояние колонии: ${JSON.stringify(context)}
+Сообщение игрока: ${label}` }
+    ];
+    recordAlgaeReply(family, label, index, true);
+    algaeInferencePending = true;
+    algaeModelStatus.textContent = 'Водоросль думает…';
+    try {
+        const reply = (await runAlgaeModel(messages))?.trim();
+        if (!reply) throw new Error('Модель вернула пустой ответ');
+        if (simulation === world || (room && roomPeer === room)) {
+            recordAlgaeReply(family, reply.slice(0, 400), index);
+        }
+        algaeModelStatus.textContent = '';
+    } catch {
+        algaeModelStatus.textContent = 'Локальная модель недоступна. Нужна уже установленная модель браузера или запущенная Ollama с загруженной моделью.';
+    } finally {
+        algaeInferencePending = false;
     }
 }
 
 algaeChatActions.addEventListener('click', event => {
     const button = event.target.closest('button[data-question]');
-    if (button) sendAlgaeMessage(button.dataset.question, button.textContent);
+    if (button) void sendAlgaeMessage(button.textContent);
 });
 
 algaeChatCompose.addEventListener('submit', event => {
     event.preventDefault();
     const text = algaeChatInput.value.trim().slice(0, 160);
-    if (!text) return;
-    sendAlgaeMessage(text, text);
+    if (!text || algaeInferencePending) return;
+    void sendAlgaeMessage(text);
     algaeChatInput.value = '';
 });
 
@@ -1640,14 +1717,6 @@ function receiveGuest(connection, packet) {
     }
     const guest = roomGuests.get(connection);
     if (!guest) return;
-    if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family)
-            && typeof packet.question === 'string' && packet.question.trim() && packet.question.length <= 160) {
-        const index = Number.isSafeInteger(packet.index) && simulation.cells.get(packet.index)?.colony.family === packet.family
-            ? packet.index : null;
-        connection.send({ kind: 'chat', family: packet.family, index,
-            reply: simulation.talkToAlgae(packet.family, packet.question, index) });
-        return;
-    }
     if (guest.lost) return;
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
@@ -1693,8 +1762,6 @@ async function receiveHost(connection, packet) {
         showVersionMismatch(packet.version, connection);
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
-    } else if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family) && typeof packet.reply === 'string') {
-        recordAlgaeReply(packet.family, packet.reply, packet.index);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {

@@ -896,49 +896,37 @@ export class Simulation {
         }
     }
 
-    talkToAlgae(family, question, index) {
-        if (!this.families.has(family)) return 'Эта водоросль исчезла.';
-        if (!this.aiEnabled) return 'Включи «ИИ водорослей», чтобы они могли отвечать.';
-        const text = question.toLowerCase();
-        if (/радиац|облуч|радиоактив|radiation/.test(text)) {
-            const site = this.cells.get(index)?.colony.family === family
-                ? index : [...this.cells.values()].find(cell => cell.colony.family === family)?.index;
-            if (site === undefined) return 'У меня пока нет данных о радиации вокруг нас.';
-            const x = site % this.width;
-            const y = Math.floor(site / this.width);
-            let peak = 0;
-            for (let dy = -1; dy <= 1; dy++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    peak = Math.max(peak, this.radiation[this.wrappedIndex(x + dx, y + dy)]);
-                }
+    algaeChatContext(family, index) {
+        const cell = this.cells.get(index);
+        if (!cell || cell.colony.family !== family) return null;
+        const types = {};
+        const neighbors = new Set();
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        const water = { radiationMax: 0, energyTotal: 0, organicTotal: 0 };
+        for (const member of this.cells.values()) {
+            if (member.colony.family === family) types[member.type] = (types[member.type] ?? 0) + 1;
+        }
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const site = this.wrappedIndex(x + dx, y + dy);
+                water.radiationMax = Math.max(water.radiationMax, this.radiation[site]);
+                water.energyTotal += this.energy[site];
+                water.organicTotal += this.organic[site];
+                const rival = this.cells.get(site)?.colony.family;
+                if (rival !== undefined && rival !== family) neighbors.add(rival);
             }
-            const status = peak > RADIATION_LETHAL_ABOVE ? 'Есть смертельно опасные пиксели'
-                : peak >= CLEANER_GROWTH_RADIATION ? 'Здесь пригодится очиститель'
-                    : 'Поблизости уровень низкий';
-            return `${status}. Максимум в зоне 3×3 — ${Math.floor(peak)} рад.`;
         }
-        if (/хлор[оа]?фил|chlorophyll/.test(text)) {
-            let count = 0;
-            for (const cell of this.cells.values()) {
-                if (cell.colony.family === family && cell.type === 'chlorophyll') count++;
-            }
-            const prefix = /совету|больше|постав|добав|выраст/.test(text) ? 'Спасибо за совет. ' : '';
-            return `${prefix}Хлорофилл поможет получать энергию даже в бедной воде. У нас таких клеток: ${count}.`;
-        }
-        if (question === 'size' || /размер|сколько.*клет|большие|size/.test(text)) {
-            const count = this.familySizes.get(family) ?? 1;
-            return `Наш размер — ${count} клеток.`;
-        }
-        if (question === 'danger' || /границ|опас|враг|сосед|danger/.test(text)) {
-            return (this.familySignals.get(family) ?? 0) > this.time
-                ? 'У границы замечена колония крупнее нас. Ищем другой путь.'
-                : 'Сейчас тревожных сигналов на нашей границе нет.';
-        }
-        if (/энерг|органик|ресурс|grow|resource|расти|рост/.test(text)) {
-            return 'Ищем воду, где хватает энергии и органики для новых клеток.';
-        }
-        if (question === 'hello' || /привет|здравств|hello/.test(text)) return 'Привет! Мы тебя слышим.';
-        return 'Я могу рассказать о размере колонии, соседях и ресурсах.';
+        return {
+            family, types,
+            size: Object.values(types).reduce((total, count) => total + count, 0),
+            daylight: this.daylight,
+            selectedCell: { type: cell.type, energy: Math.floor(cell.energy), organic: Math.floor(cell.organic) },
+            water3x3: Object.fromEntries(Object.entries(water).map(([key, value]) => [key, Math.floor(value)])),
+            neighbors: Array.from(neighbors, id => ({ family: id, size: this.familySizes.get(id) ?? null })),
+            radiationKillsAbove: RADIATION_LETHAL_ABOVE,
+            borderAlarm: (this.familySignals.get(family) ?? 0) > this.time
+        };
     }
 
     aiGrowthScore(index, family, aggressive, senderIndex) {

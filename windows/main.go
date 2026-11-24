@@ -98,6 +98,10 @@ func launch() error {
 		return err
 	}
 
+	if err := bindAlgaeInference(view.Bind); err != nil {
+		return err
+	}
+
 	address := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(page)}).String()
 	view.Navigate(address)
 	view.Run()

@@ -238,6 +238,8 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #algae-chat-compose { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 #algae-chat-input { flex: 1 1 12em; min-width: 0; padding: 7px; font: inherit; }
 #algae-chat-log .from-player { color: #a4ecc0; }
+#algae-model-status { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+#algae-model-status:empty { display: none; }
 </style>
 </head>
 <body>
@@ -321,6 +323,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                         <button type="button" data-question="size">Какой у вас размер?</button>
                         <button type="button" data-question="danger">Что у границы?</button>
                     </div>
+                    <p id="algae-model-status" role="status"></p>
                     <form id="algae-chat-compose">
                         <input id="algae-chat-input" type="text" maxlength="160" autocomplete="off" aria-label="Сообщение водоросли" placeholder="Напиши сообщение">
                         <button type="submit">Отправить</button>
@@ -1300,49 +1303,37 @@ class Simulation {
         }
     }
 
-    talkToAlgae(family, question, index) {
-        if (!this.families.has(family)) return 'Эта водоросль исчезла.';
-        if (!this.aiEnabled) return 'Включи «ИИ водорослей», чтобы они могли отвечать.';
-        const text = question.toLowerCase();
-        if (/радиац|облуч|радиоактив|radiation/.test(text)) {
-            const site = this.cells.get(index)?.colony.family === family
-                ? index : [...this.cells.values()].find(cell => cell.colony.family === family)?.index;
-            if (site === undefined) return 'У меня пока нет данных о радиации вокруг нас.';
-            const x = site % this.width;
-            const y = Math.floor(site / this.width);
-            let peak = 0;
-            for (let dy = -1; dy <= 1; dy++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    peak = Math.max(peak, this.radiation[this.wrappedIndex(x + dx, y + dy)]);
-                }
+    algaeChatContext(family, index) {
+        const cell = this.cells.get(index);
+        if (!cell || cell.colony.family !== family) return null;
+        const types = {};
+        const neighbors = new Set();
+        const x = index % this.width;
+        const y = Math.floor(index / this.width);
+        const water = { radiationMax: 0, energyTotal: 0, organicTotal: 0 };
+        for (const member of this.cells.values()) {
+            if (member.colony.family === family) types[member.type] = (types[member.type] ?? 0) + 1;
+        }
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const site = this.wrappedIndex(x + dx, y + dy);
+                water.radiationMax = Math.max(water.radiationMax, this.radiation[site]);
+                water.energyTotal += this.energy[site];
+                water.organicTotal += this.organic[site];
+                const rival = this.cells.get(site)?.colony.family;
+                if (rival !== undefined && rival !== family) neighbors.add(rival);
             }
-            const status = peak > RADIATION_LETHAL_ABOVE ? 'Есть смертельно опасные пиксели'
-                : peak >= CLEANER_GROWTH_RADIATION ? 'Здесь пригодится очиститель'
-                    : 'Поблизости уровень низкий';
-            return `${status}. Максимум в зоне 3×3 — ${Math.floor(peak)} рад.`;
         }
-        if (/хлор[оа]?фил|chlorophyll/.test(text)) {
-            let count = 0;
-            for (const cell of this.cells.values()) {
-                if (cell.colony.family === family && cell.type === 'chlorophyll') count++;
-            }
-            const prefix = /совету|больше|постав|добав|выраст/.test(text) ? 'Спасибо за совет. ' : '';
-            return `${prefix}Хлорофилл поможет получать энергию даже в бедной воде. У нас таких клеток: ${count}.`;
-        }
-        if (question === 'size' || /размер|сколько.*клет|большие|size/.test(text)) {
-            const count = this.familySizes.get(family) ?? 1;
-            return `Наш размер — ${count} клеток.`;
-        }
-        if (question === 'danger' || /границ|опас|враг|сосед|danger/.test(text)) {
-            return (this.familySignals.get(family) ?? 0) > this.time
-                ? 'У границы замечена колония крупнее нас. Ищем другой путь.'
-                : 'Сейчас тревожных сигналов на нашей границе нет.';
-        }
-        if (/энерг|органик|ресурс|grow|resource|расти|рост/.test(text)) {
-            return 'Ищем воду, где хватает энергии и органики для новых клеток.';
-        }
-        if (question === 'hello' || /привет|здравств|hello/.test(text)) return 'Привет! Мы тебя слышим.';
-        return 'Я могу рассказать о размере колонии, соседях и ресурсах.';
+        return {
+            family, types,
+            size: Object.values(types).reduce((total, count) => total + count, 0),
+            daylight: this.daylight,
+            selectedCell: { type: cell.type, energy: Math.floor(cell.energy), organic: Math.floor(cell.organic) },
+            water3x3: Object.fromEntries(Object.entries(water).map(([key, value]) => [key, Math.floor(value)])),
+            neighbors: Array.from(neighbors, id => ({ family: id, size: this.familySizes.get(id) ?? null })),
+            radiationKillsAbove: RADIATION_LETHAL_ABOVE,
+            borderAlarm: (this.familySignals.get(family) ?? 0) > this.time
+        };
     }
 
     aiGrowthScore(index, family, aggressive, senderIndex) {
@@ -2930,25 +2921,102 @@ algaeChat.addEventListener('click', event => {
     chatCanClick = false;
 }, true);
 
-function sendAlgaeMessage(question, label) {
-    recordAlgaeReply(chatFamily, label, chatIndex, true);
-    if (roomPeer && !roomHost) {
-        if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question, index: chatIndex });
-    } else {
-        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question, chatIndex), chatIndex);
+const algaeModelStatus = document.querySelector('#algae-model-status');
+const algaeModelPrompt = `Ты говоришь от имени вымышленной колонии водорослей в игре WFO.
+Отвечай естественно и кратко по-русски. Учитывай предшествующий диалог.
+Игровое состояние для текущего вопроса приведено отдельно. Используй только факты из него.
+Поле water3x3 описывает воду около выбранной клетки, а не всю карту.
+Хлорофилл вырабатывает энергию даже ночью. Очиститель вырабатывает энергию и немного органики из радиации.
+Ты можешь обсудить предложения игрока, но не меняешь карту, геном или правила перепиской.
+Если чего-то не знаешь, скажи об этом. Дай один ответ без подписи и Markdown.`;
+let algaeInferencePending = false;
+
+async function runAlgaeModel(messages) {
+    if (await window.LanguageModel?.availability?.().catch(() => '') === 'available') {
+        let session;
+        try {
+            session = await window.LanguageModel.create({
+                initialPrompts: messages.slice(0, -1)
+            });
+            return await session.prompt(messages.at(-1).content);
+        } catch {
+            // Fall through to the local Ollama installation if the browser model cannot answer.
+        } finally {
+            session?.destroy();
+        }
+    }
+    if (typeof window.wfoStartAlgaeInference === 'function') {
+        await window.wfoStartAlgaeInference(messages);
+        for (;;) {
+            const result = await window.wfoPollAlgaeInference();
+            if (result?.error) throw new Error(result.error);
+            if (result?.text) return result.text;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
+    const endpoint = 'http://127.0.0.1:11434';
+    const signal = AbortSignal.timeout(90_000);
+    const inventory = await fetch(endpoint + '/api/tags', { signal, redirect: 'error' });
+    if (!inventory.ok) throw new Error('Ollama недоступна');
+    const { models } = await inventory.json();
+    const installed = models?.filter(entry => entry.size > 0 && !entry.remote_host && !/cloud/i.test(entry.name));
+    const model = installed?.find(entry => /^qwen/i.test(entry.name)) ?? installed?.[0];
+    if (!model) throw new Error('В Ollama нет установленной модели');
+    const response = await fetch(endpoint + '/api/chat', {
+        method: 'POST', signal, redirect: 'error',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model.name, messages, stream: false, options: { num_predict: 160 } })
+    });
+    if (!response.ok) throw new Error('Ollama не смогла ответить');
+    const result = await response.json();
+    return result.message?.content;
+}
+
+async function sendAlgaeMessage(label) {
+    if (algaeInferencePending) return;
+    const world = simulation;
+    const room = roomPeer;
+    const family = chatFamily;
+    const index = chatIndex;
+    const context = world.algaeChatContext(family, index);
+    if (!world.aiEnabled || !context) {
+        algaeModelStatus.textContent = world.aiEnabled ? 'Выбранная клетка исчезла' : 'Включи «ИИ водорослей»';
+        return;
+    }
+    const previous = (algaeReplies.get(family) ?? []).slice(-8);
+    const messages = [
+        { role: 'system', content: algaeModelPrompt },
+        ...previous.map(message => ({ role: message.outgoing ? 'user' : 'assistant', content: message.text })),
+        { role: 'user', content: `Состояние колонии: ${JSON.stringify(context)}
+Сообщение игрока: ${label}` }
+    ];
+    recordAlgaeReply(family, label, index, true);
+    algaeInferencePending = true;
+    algaeModelStatus.textContent = 'Водоросль думает…';
+    try {
+        const reply = (await runAlgaeModel(messages))?.trim();
+        if (!reply) throw new Error('Модель вернула пустой ответ');
+        if (simulation === world || (room && roomPeer === room)) {
+            recordAlgaeReply(family, reply.slice(0, 400), index);
+        }
+        algaeModelStatus.textContent = '';
+    } catch {
+        algaeModelStatus.textContent = 'Локальная модель недоступна. Нужна уже установленная модель браузера или запущенная Ollama с загруженной моделью.';
+    } finally {
+        algaeInferencePending = false;
     }
 }
 
 algaeChatActions.addEventListener('click', event => {
     const button = event.target.closest('button[data-question]');
-    if (button) sendAlgaeMessage(button.dataset.question, button.textContent);
+    if (button) void sendAlgaeMessage(button.textContent);
 });
 
 algaeChatCompose.addEventListener('submit', event => {
     event.preventDefault();
     const text = algaeChatInput.value.trim().slice(0, 160);
-    if (!text) return;
-    sendAlgaeMessage(text, text);
+    if (!text || algaeInferencePending) return;
+    void sendAlgaeMessage(text);
     algaeChatInput.value = '';
 });
 
@@ -3670,14 +3738,6 @@ function receiveGuest(connection, packet) {
     }
     const guest = roomGuests.get(connection);
     if (!guest) return;
-    if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family)
-            && typeof packet.question === 'string' && packet.question.trim() && packet.question.length <= 160) {
-        const index = Number.isSafeInteger(packet.index) && simulation.cells.get(packet.index)?.colony.family === packet.family
-            ? packet.index : null;
-        connection.send({ kind: 'chat', family: packet.family, index,
-            reply: simulation.talkToAlgae(packet.family, packet.question, index) });
-        return;
-    }
     if (guest.lost) return;
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
@@ -3723,8 +3783,6 @@ async function receiveHost(connection, packet) {
         showVersionMismatch(packet.version, connection);
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
-    } else if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family) && typeof packet.reply === 'string') {
-        recordAlgaeReply(packet.family, packet.reply, packet.index);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {
