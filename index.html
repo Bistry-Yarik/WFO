@@ -325,6 +325,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
                         <button type="button" data-question="danger">Что у границы?</button>
                     </div>
                     <p id="algae-model-status" role="status"></p>
+                    <button id="confirm-algae-deal" type="button" hidden>Подтвердить сделку</button>
                     <form id="algae-chat-compose">
                         <input id="algae-chat-input" type="text" maxlength="160" autocomplete="off" aria-label="Сообщение водоросли" placeholder="Напиши сообщение">
                         <button type="submit">Отправить</button>
@@ -567,6 +568,7 @@ class Simulation {
         this.algaeMessages = [];
         this.algaeRelations = new Map();
         this.algaeContacts = new Map();
+        this.algaeContracts = new Map();
         this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
@@ -779,6 +781,7 @@ class Simulation {
             version: 1, width: this.width, limits: this.limits, time: this.time,
             totalSeeds: this.totalSeeds, mutations: this.mutations, overloads: this.overloads,
             survival: this.survival, aiEnabled: this.aiEnabled, algaeMessages: this.algaeMessages,
+            algaeContracts: [...this.algaeContracts],
             algaeRelations: Array.from(this.algaeRelations, ([family, relations]) => [family, [...relations]]),
             energy: Array.from(this.energy), organic: Array.from(this.organic), radiation: Array.from(this.radiation),
             colonies: Array.from(this.colonies.values()), cells: serialize(this.cells), parasites: serialize(this.parasites)
@@ -811,6 +814,7 @@ class Simulation {
         world.pruneColonies();
         world.setAdaptiveAI(save.aiEnabled === true);
         world.algaeMessages = Array.isArray(save.algaeMessages) ? save.algaeMessages.slice(-64) : [];
+        if (Array.isArray(save.algaeContracts)) world.algaeContracts = new Map(save.algaeContracts);
         if (Array.isArray(save.algaeRelations)) {
             world.algaeRelations = new Map(save.algaeRelations.map(([family, relations]) => [family, new Map(relations)]));
         }
@@ -1016,7 +1020,11 @@ class Simulation {
             cell.lastWorkAge = cell.age;
             return;
         }
-        for (const index of onlyTarget ? [onlyTarget.index] : this.neighbors(cell.index)) {
+        const contract = onlyTarget ? null : this.activeAttackContract(cell.colony.family);
+        const neighbors = onlyTarget ? [onlyTarget.index] : this.neighbors(cell.index);
+        const priority = contract && neighbors.find(index => this.cells.get(index)?.colony.family === contract.target);
+        const sites = Number.isInteger(priority) ? [priority, ...neighbors.filter(index => index !== priority)] : neighbors;
+        for (const index of sites) {
             const target = this.cells.get(index);
             if (!target || target.colony.family === cell.colony.family || target[resource] <= 0
                     || (!onlyTarget && !this.mayAttack(cell.colony.family, target.colony.family))) continue;
@@ -1042,6 +1050,8 @@ class Simulation {
         const rows = this.throwRows[Math.floor(cell.index / this.width)];
         const rivals = this.families.size > 1;
         if (!rivals && this.cells.size === this.energy.length) return false;
+        const contract = this.activeAttackContract(cell.colony.family);
+        let priority;
         let count = 0;
         for (let offset = 0; offset < THROW_OFFSETS.length; offset++) {
             const index = columns[offset] + rows[offset];
@@ -1049,10 +1059,14 @@ class Simulation {
             if (target && (!rivals || target.colony.family === cell.colony.family
                     || !this.mayAttack(cell.colony.family, target.colony.family))) continue;
             if (!this.isSeedSiteSafe(index)) continue;
+            if (contract && target?.colony.family === contract.target) {
+                priority = index;
+                break;
+            }
             this.throwSites[count++] = index;
         }
-        if (count === 0) return false;
-        const index = this.throwSites[Math.floor(this.random() * count)];
+        if (priority === undefined && count === 0) return false;
+        const index = priority ?? this.throwSites[Math.floor(this.random() * count)];
         this.launchSeedAt(index, cell, THROWN_SEED_COST);
         return true;
     }
@@ -1143,13 +1157,15 @@ class Simulation {
     }
 
     findToothHost(candidates, family) {
+        const contract = this.activeAttackContract(family);
         let fallback = null;
         for (const index of candidates) {
             const target = this.cells.get(index);
             if (!target || target.colony.family === family || !this.mayAttack(family, target.colony.family)
                     || this.parasites.has(index) || !this.isSeedSiteSafe(index)) continue;
-            if (target.type === 'channel') return target;
-            fallback ??= target;
+            if (contract?.target === target.colony.family) return target;
+            if (!contract && target.type === 'channel') return target;
+            if (!fallback || (fallback.type !== 'channel' && target.type === 'channel')) fallback = target;
         }
         return fallback;
     }
@@ -1312,6 +1328,11 @@ class Simulation {
                 this.familySizes.set(colony.family, (this.familySizes.get(colony.family) ?? 0) + 1);
             }
         }
+        for (const [family, contract] of this.algaeContracts) {
+            if (contract.until <= this.time || !this.familySizes.has(family) || !this.familySizes.has(contract.target)) {
+                this.algaeContracts.delete(family);
+            }
+        }
         for (const [family, relations] of this.algaeRelations) {
             if (!this.familySizes.has(family)) {
                 this.algaeRelations.delete(family);
@@ -1341,6 +1362,45 @@ class Simulation {
 
     mayAttack(from, to) {
         return !this.isAiFamily(from) || this.friendliness(from, to) < 20;
+    }
+
+    activeAttackContract(family) {
+        if (!this.isAiFamily(family)) return null;
+        const contract = this.algaeContracts.get(family);
+        if (!contract) return null;
+        if (this.time >= contract.until || !this.families.has(contract.target)) {
+            this.algaeContracts.delete(family);
+            return null;
+        }
+        return contract;
+    }
+
+    makeAttackDeal(index, target, resource, amount) {
+        const buyer = this.survival;
+        if (!buyer || buyer.lost) return 'Для сделки нужна своя водоросль.';
+        const seller = this.cells.get(index);
+        const family = seller?.colony.family;
+        if (!seller || !this.isAiFamily(family)) return 'Эта водоросль сейчас не принимает сделки.';
+        if (!Number.isSafeInteger(target) || target === family || target === buyer.family
+                || !['energy', 'organic'].includes(resource) || !Number.isSafeInteger(amount) || amount <= 0) {
+            return 'Укажи чужой род и положительную целую сумму.';
+        }
+        if (!this.mayAttack(family, target)) return 'Мы сотрудничаем с этим родом. Сделку отклоняем.';
+        if (this.activeAttackContract(family)) return 'Мы уже выполняем другой договор.';
+        let targetCell;
+        const sources = [];
+        for (const cell of this.cells.values()) {
+            if (!targetCell && cell.colony.family === target) targetCell = cell;
+            if (cell.type === 'channel' && cell.colony.family === buyer.family) sources.push(cell);
+        }
+        if (!targetCell) return 'На карте нет такого рода.';
+        const cost = { energy: 0, organic: 0, [resource]: amount };
+        if (this.payPlayerConstruction(sources, cost)) return 'В твоих каналах и резерве не хватает платы.';
+        seller[resource] += amount;
+        this.algaeContracts.set(family, { target, index: targetCell.index, until: this.time + 90 });
+        this.changeFriendliness(family, target, -40);
+        this.changeFriendliness(family, buyer.family, 10);
+        return `Сделка принята. Плату получили. В следующие 90 игровых секунд наша цель — род №${target}.`;
     }
 
     sayToAlgae(from, to, text) {
@@ -1425,12 +1485,22 @@ class Simulation {
     aiGrowthScore(index, family, aggressive, senderIndex) {
         const size = this.familySizes.get(family) ?? 1;
         let score = this.isSeedSiteSafe(index) ? 0 : -100;
+        const contract = this.activeAttackContract(family);
+        if (contract) {
+            const dx = Math.abs(index % this.width - contract.index % this.width);
+            const dy = Math.abs(Math.floor(index / this.width) - Math.floor(contract.index / this.width));
+            score -= 2 * (Math.min(dx, this.width - dx) + Math.min(dy, this.height - dy));
+        }
         score += Math.min(this.energy[index], 1000) / 1000;
         score += Math.min(this.organic[index], 1000) / 1000;
         score -= Math.min(this.radiation[index], 1000) / 250;
         for (const site of this.neighbors(index)) {
             const rival = this.cells.get(site)?.colony.family;
             if (rival === undefined || rival === family) continue;
+            if (contract?.target === rival) {
+                score += 5;
+                continue;
+            }
             const opinion = this.friendliness(family, rival);
             if (opinion >= 20) {
                 score += aggressive ? -5 : 1;
@@ -2217,7 +2287,7 @@ function answerAlgae(text, context, previousTopic) {
             reply = `Сейчас ${daylight ? 'день' : 'ночь'}. Хлорофилл работает в обоих случаях, а ночью ещё и даёт немного органики.`;
             break;
         case 'attack_offer':
-            reply = 'Ты предлагаешь ресурсы в обмен на атаку. Пока я могу обсудить это, а сделки через чат ещё недоступны.';
+            reply = 'Укажи номер рода и точную плату, например: «Атакуй род 2 за 300 органики».';
             break;
         case 'peace':
             reply = borderAlarm ? 'Мы заметили движение у границы. Можем держаться подальше, но договоров в игре пока нет.'
@@ -3098,6 +3168,7 @@ function openAlgaeChat(index) {
     if (!cell || document.querySelector('dialog[open]')) return false;
     chatFamily = cell.colony.family;
     chatIndex = index;
+    clearAlgaeDeal();
     algaeChatInput.value = '';
     algaeModelStatus.textContent = '';
     updateChatRecipient();
@@ -3131,6 +3202,8 @@ algaeChat.addEventListener('click', event => {
 }, true);
 
 const algaeModelStatus = document.querySelector('#algae-model-status');
+const confirmAlgaeDeal = document.querySelector('#confirm-algae-deal');
+let pendingAlgaeDeal = null;
 const algaeChatTopics = new Map();
 
 function isPlayerFamily(family) {
@@ -3161,7 +3234,46 @@ function deliverPlayerChat(from, to, text) {
     return false;
 }
 
+function clearAlgaeDeal() {
+    pendingAlgaeDeal = null;
+    confirmAlgaeDeal.hidden = true;
+}
+
+function prepareAlgaeDeal(text) {
+    const target = /род(?:а|у|ом)?\s*[№#]?\s*(\d+)/i.exec(text);
+    const payment = /(?<![-+\d.,])(\d+)\s*(органик[аи]|мяса?|энерги[ияи])/i.exec(text);
+    if (!target || !payment) return false;
+    const [, rawAmount, unit] = payment;
+    const resource = /^энерг/i.test(unit) ? 'energy' : 'organic';
+    const amount = Number(rawAmount);
+    const family = chatFamily;
+    const index = chatIndex;
+    pendingAlgaeDeal = { family, index, target: Number(target[1]), resource, amount };
+    confirmAlgaeDeal.textContent = `Подтвердить · ${amount} ${resource === 'energy' ? 'энергии' : 'органики'} за атаку рода №${target[1]}`;
+    confirmAlgaeDeal.hidden = false;
+    return true;
+}
+
+function executeAlgaeDeal({ family, index, target, resource, amount }) {
+    if (!Number.isSafeInteger(index) || simulation.cells.get(index)?.colony.family !== family) {
+        return 'Водоросль, с которой ты договаривался, исчезла.';
+    }
+    return simulation.makeAttackDeal(index, target, resource, amount);
+}
+
+confirmAlgaeDeal.addEventListener('click', () => {
+    if (!pendingAlgaeDeal) return;
+    const deal = pendingAlgaeDeal;
+    clearAlgaeDeal();
+    if (roomPeer && !roomHost && hostConnection?.open) {
+        hostConnection.send({ kind: 'algae-deal', deal });
+    } else if (!roomPeer || roomHost) {
+        recordAlgaeReply(deal.family, executeAlgaeDeal(deal), deal.index);
+    }
+});
+
 function sendAlgaeMessage(label) {
+    clearAlgaeDeal();
     updateChatRecipient();
     algaeModelStatus.textContent = '';
     if (isPlayerFamily(chatFamily)) {
@@ -3193,7 +3305,11 @@ function sendAlgaeMessage(label) {
     }
     algaeChatTopics.set(chatFamily, topic);
     recordAlgaeReply(chatFamily, label, chatIndex, true);
-    recordAlgaeReply(chatFamily, reply, chatIndex);
+    if (topic === 'attack_offer' && prepareAlgaeDeal(label)) {
+        recordAlgaeReply(chatFamily, 'Проверь условия и подтверди предложение. При согласии плата спишется сразу.', chatIndex);
+    } else {
+        recordAlgaeReply(chatFamily, reply, chatIndex);
+    }
 }
 
 algaeChatActions.addEventListener('click', event => {
@@ -3937,6 +4053,18 @@ function receiveGuest(connection, packet) {
         }
         return;
     }
+    if (packet?.kind === 'algae-deal' && packet.deal && Number.isSafeInteger(packet.deal.family)) {
+        const host = simulation.survival;
+        let text;
+        try {
+            simulation.survival = guest;
+            text = executeAlgaeDeal(packet.deal);
+        } finally {
+            simulation.survival = host;
+        }
+        connection.send({ kind: 'algae-deal-result', family: packet.deal.family, index: packet.deal.index, text });
+        return;
+    }
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
         return;
@@ -3988,6 +4116,8 @@ async function receiveHost(connection, packet) {
         const sender = Array.from(simulation.cells.values()).find(cell => cell.colony.family === packet.from);
         recordAlgaeReply(packet.from, packet.text, sender?.index);
         gameStatus.textContent = `Сообщение от игрока · род ${packet.from}`;
+    } else if (packet?.kind === 'algae-deal-result' && Number.isSafeInteger(packet.family) && typeof packet.text === 'string') {
+        recordAlgaeReply(packet.family, packet.text, packet.index);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {

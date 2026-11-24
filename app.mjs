@@ -871,6 +871,7 @@ function openAlgaeChat(index) {
     if (!cell || document.querySelector('dialog[open]')) return false;
     chatFamily = cell.colony.family;
     chatIndex = index;
+    clearAlgaeDeal();
     algaeChatInput.value = '';
     algaeModelStatus.textContent = '';
     updateChatRecipient();
@@ -904,6 +905,8 @@ algaeChat.addEventListener('click', event => {
 }, true);
 
 const algaeModelStatus = document.querySelector('#algae-model-status');
+const confirmAlgaeDeal = document.querySelector('#confirm-algae-deal');
+let pendingAlgaeDeal = null;
 const algaeChatTopics = new Map();
 
 function isPlayerFamily(family) {
@@ -934,7 +937,46 @@ function deliverPlayerChat(from, to, text) {
     return false;
 }
 
+function clearAlgaeDeal() {
+    pendingAlgaeDeal = null;
+    confirmAlgaeDeal.hidden = true;
+}
+
+function prepareAlgaeDeal(text) {
+    const target = /род(?:а|у|ом)?\s*[№#]?\s*(\d+)/i.exec(text);
+    const payment = /(?<![-+\d.,])(\d+)\s*(органик[аи]|мяса?|энерги[ияи])/i.exec(text);
+    if (!target || !payment) return false;
+    const [, rawAmount, unit] = payment;
+    const resource = /^энерг/i.test(unit) ? 'energy' : 'organic';
+    const amount = Number(rawAmount);
+    const family = chatFamily;
+    const index = chatIndex;
+    pendingAlgaeDeal = { family, index, target: Number(target[1]), resource, amount };
+    confirmAlgaeDeal.textContent = `Подтвердить · ${amount} ${resource === 'energy' ? 'энергии' : 'органики'} за атаку рода №${target[1]}`;
+    confirmAlgaeDeal.hidden = false;
+    return true;
+}
+
+function executeAlgaeDeal({ family, index, target, resource, amount }) {
+    if (!Number.isSafeInteger(index) || simulation.cells.get(index)?.colony.family !== family) {
+        return 'Водоросль, с которой ты договаривался, исчезла.';
+    }
+    return simulation.makeAttackDeal(index, target, resource, amount);
+}
+
+confirmAlgaeDeal.addEventListener('click', () => {
+    if (!pendingAlgaeDeal) return;
+    const deal = pendingAlgaeDeal;
+    clearAlgaeDeal();
+    if (roomPeer && !roomHost && hostConnection?.open) {
+        hostConnection.send({ kind: 'algae-deal', deal });
+    } else if (!roomPeer || roomHost) {
+        recordAlgaeReply(deal.family, executeAlgaeDeal(deal), deal.index);
+    }
+});
+
 function sendAlgaeMessage(label) {
+    clearAlgaeDeal();
     updateChatRecipient();
     algaeModelStatus.textContent = '';
     if (isPlayerFamily(chatFamily)) {
@@ -966,7 +1008,11 @@ function sendAlgaeMessage(label) {
     }
     algaeChatTopics.set(chatFamily, topic);
     recordAlgaeReply(chatFamily, label, chatIndex, true);
-    recordAlgaeReply(chatFamily, reply, chatIndex);
+    if (topic === 'attack_offer' && prepareAlgaeDeal(label)) {
+        recordAlgaeReply(chatFamily, 'Проверь условия и подтверди предложение. При согласии плата спишется сразу.', chatIndex);
+    } else {
+        recordAlgaeReply(chatFamily, reply, chatIndex);
+    }
 }
 
 algaeChatActions.addEventListener('click', event => {
@@ -1710,6 +1756,18 @@ function receiveGuest(connection, packet) {
         }
         return;
     }
+    if (packet?.kind === 'algae-deal' && packet.deal && Number.isSafeInteger(packet.deal.family)) {
+        const host = simulation.survival;
+        let text;
+        try {
+            simulation.survival = guest;
+            text = executeAlgaeDeal(packet.deal);
+        } finally {
+            simulation.survival = host;
+        }
+        connection.send({ kind: 'algae-deal-result', family: packet.deal.family, index: packet.deal.index, text });
+        return;
+    }
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
         return;
@@ -1761,6 +1819,8 @@ async function receiveHost(connection, packet) {
         const sender = Array.from(simulation.cells.values()).find(cell => cell.colony.family === packet.from);
         recordAlgaeReply(packet.from, packet.text, sender?.index);
         gameStatus.textContent = `Сообщение от игрока · род ${packet.from}`;
+    } else if (packet?.kind === 'algae-deal-result' && Number.isSafeInteger(packet.family) && typeof packet.text === 'string') {
+        recordAlgaeReply(packet.family, packet.text, packet.index);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {
