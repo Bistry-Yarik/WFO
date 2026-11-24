@@ -157,6 +157,8 @@ export class Simulation {
         this.familySizes = new Map();
         this.familySignals = new Map();
         this.algaeMessages = [];
+        this.algaeRelations = new Map();
+        this.algaeContacts = new Map();
         this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
@@ -369,6 +371,7 @@ export class Simulation {
             version: 1, width: this.width, limits: this.limits, time: this.time,
             totalSeeds: this.totalSeeds, mutations: this.mutations, overloads: this.overloads,
             survival: this.survival, aiEnabled: this.aiEnabled, algaeMessages: this.algaeMessages,
+            algaeRelations: Array.from(this.algaeRelations, ([family, relations]) => [family, [...relations]]),
             energy: Array.from(this.energy), organic: Array.from(this.organic), radiation: Array.from(this.radiation),
             colonies: Array.from(this.colonies.values()), cells: serialize(this.cells), parasites: serialize(this.parasites)
         };
@@ -400,6 +403,9 @@ export class Simulation {
         world.pruneColonies();
         world.setAdaptiveAI(save.aiEnabled === true);
         world.algaeMessages = Array.isArray(save.algaeMessages) ? save.algaeMessages.slice(-64) : [];
+        if (Array.isArray(save.algaeRelations)) {
+            world.algaeRelations = new Map(save.algaeRelations.map(([family, relations]) => [family, new Map(relations)]));
+        }
         return world;
     }
 
@@ -604,8 +610,10 @@ export class Simulation {
         }
         for (const index of onlyTarget ? [onlyTarget.index] : this.neighbors(cell.index)) {
             const target = this.cells.get(index);
-            if (!target || target.colony.family === cell.colony.family || target[resource] <= 0) continue;
+            if (!target || target.colony.family === cell.colony.family || target[resource] <= 0
+                    || (!onlyTarget && !this.mayAttack(cell.colony.family, target.colony.family))) continue;
             const amount = Math.min(capacity, target[resource]);
+            if (this.aiEnabled) this.changeFriendliness(target.colony.family, cell.colony.family, -Math.min(6, amount / 12));
             target[resource] -= amount;
             cell[resource] += amount;
             if (amount >= MIN_USEFUL_WORK) cell.lastWorkAge = cell.age;
@@ -630,7 +638,8 @@ export class Simulation {
         for (let offset = 0; offset < THROW_OFFSETS.length; offset++) {
             const index = columns[offset] + rows[offset];
             const target = this.cells.get(index);
-            if (target && (!rivals || target.colony.family === cell.colony.family)) continue;
+            if (target && (!rivals || target.colony.family === cell.colony.family
+                    || !this.mayAttack(cell.colony.family, target.colony.family))) continue;
             if (!this.isSeedSiteSafe(index)) continue;
             this.throwSites[count++] = index;
         }
@@ -664,7 +673,9 @@ export class Simulation {
                 const parasite = this.parasites.get(site);
                 const cell = this.cells.get(site);
                 for (const victim of [parasite, cell]) {
-                    if (!victim || victim.colony.family === colony.family) continue;
+                    if (!victim || victim.colony.family === colony.family
+                            || !this.mayAttack(colony.family, victim.colony.family)) continue;
+                    if (this.aiEnabled) this.changeFriendliness(victim.colony.family, colony.family, -30);
                     cargo.energy += victim.energy;
                     cargo.organic += victim.organic;
                     this.radiation[site] += DEATH_RADIATION;
@@ -727,7 +738,7 @@ export class Simulation {
         let fallback = null;
         for (const index of candidates) {
             const target = this.cells.get(index);
-            if (!target || target.colony.family === family
+            if (!target || target.colony.family === family || !this.mayAttack(family, target.colony.family)
                     || this.parasites.has(index) || !this.isSeedSiteSafe(index)) continue;
             if (target.type === 'channel') return target;
             fallback ??= target;
@@ -839,6 +850,7 @@ export class Simulation {
         const target = this.cells.get(index);
         if (target) {
             if (wormRole === 'front' && target.colony.family !== cell.colony.family
+                    && this.mayAttack(cell.colony.family, target.colony.family)
                     && !this.parasites.has(index) && this.isSeedSiteSafe(index)
                     && this.fundWormGrowth(cell, CELL_COST)) {
                 const toothType = target.energy > target.organic ? 'blueTeeth' : 'teeth';
@@ -881,6 +893,7 @@ export class Simulation {
         this.aiEnabled = enabled;
         this.familySignals.clear();
         this.familySizes.clear();
+        this.algaeContacts.clear();
         if (enabled) this.countAiFamilies();
     }
 
@@ -891,8 +904,80 @@ export class Simulation {
                 this.familySizes.set(colony.family, (this.familySizes.get(colony.family) ?? 0) + 1);
             }
         }
+        for (const [family, relations] of this.algaeRelations) {
+            if (!this.familySizes.has(family)) {
+                this.algaeRelations.delete(family);
+                continue;
+            }
+            for (const other of relations.keys()) if (!this.familySizes.has(other)) relations.delete(other);
+        }
         for (const [family, until] of this.familySignals) {
             if (!this.familySizes.has(family) || until <= this.time) this.familySignals.delete(family);
+        }
+    }
+
+    isAiFamily(family) {
+        return this.aiEnabled && family !== this.survival?.family && !this.manualFamilies.has(family);
+    }
+
+    friendliness(from, to) {
+        return this.algaeRelations.get(from)?.get(to) ?? 0;
+    }
+
+    changeFriendliness(from, to, amount) {
+        if (!this.isAiFamily(from) || from === to || !amount) return;
+        let relations = this.algaeRelations.get(from);
+        if (!relations) this.algaeRelations.set(from, relations = new Map());
+        relations.set(to, Math.max(-100, Math.min(100, this.friendliness(from, to) + amount)));
+    }
+
+    mayAttack(from, to) {
+        return !this.isAiFamily(from) || this.friendliness(from, to) < 20;
+    }
+
+    sayToAlgae(from, to, text) {
+        this.algaeMessages.push({ from: from.colony.family, to, index: from.index, time: this.time, text });
+        if (this.algaeMessages.length > 64) this.algaeMessages.shift();
+    }
+
+    talkWithNeighbors() {
+        for (const [key, until] of this.algaeContacts) {
+            if (until <= this.time) this.algaeContacts.delete(key);
+        }
+        let conversations = 0;
+        for (const cell of this.cells.values()) {
+            const from = cell.colony.family;
+            if (cell.type !== 'channel' || !this.isAiFamily(from)) continue;
+            const nearby = this.neighbors(cell.index);
+            for (let direction = 0; direction < DIRECTIONS.length * 2; direction++) {
+                const step = direction % DIRECTIONS.length;
+                const index = direction < DIRECTIONS.length ? nearby[step] : this.neighbors(nearby[step])[step];
+                const contact = this.cells.get(index);
+                if (!contact || contact.colony.family === from) continue;
+                const to = contact.colony.family;
+                const key = from < to ? `${from}:${to}` : `${to}:${from}`;
+                if (this.algaeContacts.has(key)) continue;
+                this.algaeContacts.set(key, this.time + 20);
+                const opinion = this.friendliness(from, to);
+                const otherOpinion = this.friendliness(to, from);
+                if (opinion <= -15 || otherOpinion <= -15) {
+                    this.sayToAlgae(cell, to, 'После стычек мы вам не доверяем. Держитесь подальше от границы.');
+                } else if (this.isAiFamily(to) && opinion >= 0 && otherOpinion >= 0) {
+                    this.changeFriendliness(from, to, 24);
+                    this.changeFriendliness(to, from, 24);
+                    if (opinion < 20 || otherOpinion < 20) {
+                        this.sayToAlgae(cell, to, 'Предлагаем мирно пользоваться соседними участками воды.');
+                        this.sayToAlgae(contact, from, 'Согласны. Оставим ваши клетки в покое.');
+                    } else {
+                        this.sayToAlgae(cell, to, 'Наша общая граница спокойна. Продолжаем расти рядом.');
+                        this.sayToAlgae(contact, from, 'Да, продолжаем сотрудничать.');
+                    }
+                } else {
+                    this.sayToAlgae(cell, to, 'Видим вас у границы. Если не будет атак, можем жить рядом.');
+                    this.changeFriendliness(from, to, 4);
+                }
+                if (++conversations === 12) return;
+            }
         }
     }
 
@@ -938,6 +1023,12 @@ export class Simulation {
         for (const site of this.neighbors(index)) {
             const rival = this.cells.get(site)?.colony.family;
             if (rival === undefined || rival === family) continue;
+            const opinion = this.friendliness(family, rival);
+            if (opinion >= 20) {
+                score += aggressive ? -5 : 1;
+                continue;
+            }
+            if (opinion < -15) score += aggressive ? 2 : -2;
             const rivalSize = this.familySizes.get(rival) ?? 1;
             if (rivalSize > size) {
                 // A border channel broadcasts an alarm for nearby families to read.
@@ -977,7 +1068,8 @@ export class Simulation {
         if (type === 'seed') {
             const candidates = (this.aiEnabled ? ordered : neighbors).filter(candidate => {
                 const target = this.cells.get(candidate);
-                return target?.colony.family !== cell.colony.family && this.isSeedSiteSafe(candidate);
+                return target?.colony.family !== cell.colony.family && this.isSeedSiteSafe(candidate)
+                    && (!target || this.mayAttack(cell.colony.family, target.colony.family));
             });
             if (candidates.length) index = this.aiEnabled ? candidates[0] : candidates[Math.floor(this.random() * candidates.length)];
         } else {
@@ -986,7 +1078,8 @@ export class Simulation {
                 if (!biting) return true;
                 return this.neighbors(candidate).some(adjacent => {
                     const neighbor = this.cells.get(adjacent);
-                    return neighbor && neighbor.colony.family !== cell.colony.family;
+                    return neighbor && neighbor.colony.family !== cell.colony.family
+                        && this.mayAttack(cell.colony.family, neighbor.colony.family);
                 });
             }));
         }
@@ -1195,8 +1288,10 @@ export class Simulation {
 
     interceptResource(receiver, resource, amount) {
         const trap = !receiver.host && this.parasites.get(receiver.index);
-        if (!trap || TOOTH_RESOURCE[trap.type] !== resource || this.overloaded.has(trap.colony)) return;
+        if (!trap || TOOTH_RESOURCE[trap.type] !== resource || this.overloaded.has(trap.colony)
+                || !this.mayAttack(trap.colony.family, receiver.colony.family)) return;
         const stolen = Math.min(amount, Math.max(0, this.limits.stop - trap[resource]));
+        if (this.aiEnabled) this.changeFriendliness(receiver.colony.family, trap.colony.family, -Math.min(6, stolen / 12));
         trap[resource] += stolen;
         receiver[resource] -= stolen;
         if (stolen >= MIN_USEFUL_WORK) trap.lastWorkAge = trap.age;
@@ -1229,6 +1324,7 @@ export class Simulation {
         this.prepareTick(daylight);
         const existing = this.tickCells;
         if (this.aiEnabled && tickNumber % 20 === 0) this.countAiFamilies();
+        if (this.aiEnabled && tickNumber % 50 === 0) this.talkWithNeighbors();
         for (const colony of this.colonies.values()) {
             colony.organicReserve = 0;
             colony.reserveCells = 0;
