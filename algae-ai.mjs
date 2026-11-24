@@ -56,6 +56,9 @@ export function answerAlgae(text, context, previousTopic) {
         case 'greeting':
             reply = borderAlarm ? 'Привет! Мы следим за беспокойной границей.' : 'Привет! У нас пока спокойно. О чём поговорим?';
             break;
+        case 'identity':
+            reply = `Я водоросль рода №${context.family}. В нашем роду сейчас ${size} клеток.`;
+            break;
         case 'size':
             reply = `В нашем роду клеток: ${size}. Каналов: ${types.channel ?? 0}, семечек: ${types.seed ?? 0}.`;
             break;
