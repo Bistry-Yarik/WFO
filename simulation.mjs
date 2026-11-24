@@ -966,6 +966,19 @@ export class Simulation {
         return contract;
     }
 
+    makeAlliance(index) {
+        const player = this.survival;
+        if (!player || player.lost) return 'Для союза нужна своя водоросль.';
+        const other = this.cells.get(index)?.colony.family;
+        if (other === undefined || !this.isAiFamily(other)) return 'Эта водоросль сейчас не принимает предложения.';
+        if (this.friendliness(other, player.family) >= 20) return 'Мы уже союзники.';
+        if (this.friendliness(other, player.family) <= -15 || this.activeAttackContract(other)?.target === player.family) {
+            return 'Мы пока не доверяем вашему роду. Союз отклоняем.';
+        }
+        this.changeFriendliness(other, player.family, 30 - this.friendliness(other, player.family));
+        return 'Союз принят. Будем расти рядом и воздерживаться от атак на твой род, пока доверие сохраняется.';
+    }
+
     makeAttackDeal(index, target, resource, amount) {
         const buyer = this.survival;
         if (!buyer || buyer.lost) return 'Для сделки нужна своя водоросль.';

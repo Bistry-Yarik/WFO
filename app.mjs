@@ -957,11 +957,11 @@ function prepareAlgaeDeal(text) {
     return true;
 }
 
-function executeAlgaeDeal({ family, index, target, resource, amount }) {
+function executeAlgaeDeal({ family, index, target, resource, amount, kind }) {
     if (!Number.isSafeInteger(index) || simulation.cells.get(index)?.colony.family !== family) {
         return 'Водоросль, с которой ты договаривался, исчезла.';
     }
-    return simulation.makeAttackDeal(index, target, resource, amount);
+    return kind === 'alliance' ? simulation.makeAlliance(index) : simulation.makeAttackDeal(index, target, resource, amount);
 }
 
 confirmAlgaeDeal.addEventListener('click', () => {
@@ -1008,7 +1008,12 @@ function sendAlgaeMessage(label) {
     }
     algaeChatTopics.set(chatFamily, topic);
     recordAlgaeReply(chatFamily, label, chatIndex, true);
-    if (topic === 'attack_offer' && prepareAlgaeDeal(label)) {
+    if (topic === 'peace') {
+        pendingAlgaeDeal = { kind: 'alliance', family: chatFamily, index: chatIndex };
+        confirmAlgaeDeal.textContent = 'Предложить союз';
+        confirmAlgaeDeal.hidden = false;
+        recordAlgaeReply(chatFamily, 'Ты предлагаешь союз? Подтверди предложение, и мы решим, можем ли сотрудничать.', chatIndex);
+    } else if (topic === 'attack_offer' && prepareAlgaeDeal(label)) {
         recordAlgaeReply(chatFamily, 'Проверь условия и подтверди предложение. При согласии плата спишется сразу.', chatIndex);
     } else {
         recordAlgaeReply(chatFamily, reply, chatIndex);
