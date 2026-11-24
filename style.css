@@ -234,3 +234,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #algae-model-status { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
 #algae-model-status:empty { display: none; }
 #algae-chat-actions[hidden] { display: none; }
+
+#server-ping:empty { display: none; }
+.server-link { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 5px 0; }
+.server-link a { overflow-wrap: anywhere; color: #a4ecc0; }

@@ -966,7 +966,7 @@ export class Simulation {
         return contract;
     }
 
-    makeAlliance(index) {
+    makeAlliance(index, resource, amount) {
         const player = this.survival;
         if (!player || player.lost) return 'Для союза нужна своя водоросль.';
         const other = this.cells.get(index)?.colony.family;
@@ -975,8 +975,45 @@ export class Simulation {
         if (this.friendliness(other, player.family) <= -15 || this.activeAttackContract(other)?.target === player.family) {
             return 'Мы пока не доверяем вашему роду. Союз отклоняем.';
         }
+        const bigger = this.familySizes.get(other) ?? 1;
+        const smaller = this.familySizes.get(player.family) ?? 1;
+        if (bigger >= Math.max(8, smaller * 2)) {
+            const minimum = Math.max(100, (bigger - smaller) * 3);
+            if (!['energy', 'organic'].includes(resource) || !Number.isSafeInteger(amount) || amount < minimum) {
+                return `Наш род заметно крупнее. Предложи не меньше ${minimum} энергии или органики за союз.`;
+            }
+            const sources = [...this.cells.values()].filter(cell => cell.type === 'channel' && cell.colony.family === player.family);
+            if (this.payPlayerConstruction(sources, { energy: 0, organic: 0, [resource]: amount })) {
+                return 'В твоих каналах и резерве не хватает платы за союз.';
+            }
+            this.cells.get(index)[resource] += amount;
+        }
         this.changeFriendliness(other, player.family, 30 - this.friendliness(other, player.family));
         return 'Союз принят. Будем расти рядом и воздерживаться от атак на твой род, пока доверие сохраняется.';
+    }
+
+    makeResourceTrade(index, give, offered, receive, requested) {
+        const buyer = this.survival;
+        if (!buyer || buyer.lost) return 'Для обмена нужна своя водоросль.';
+        const seller = this.cells.get(index);
+        if (!seller || !this.isAiFamily(seller.colony.family)) return 'Здесь нет доступной для обмена водоросли.';
+        if (give === receive || !['energy', 'organic'].includes(give) || !['energy', 'organic'].includes(receive)
+                || !Number.isSafeInteger(offered) || !Number.isSafeInteger(requested) || offered <= 0 || requested <= 0) {
+            return 'Укажи положительные суммы двух разных ресурсов.';
+        }
+        if (this.friendliness(seller.colony.family, buyer.family) <= -15) return 'Мы не торгуем с враждебным родом.';
+        if (offered < requested) return 'Предлагаем обмен по курсу не хуже 1 к 1.';
+        const reserves = receive === 'energy' ? ENERGY_UPKEEP : ORGANIC_UPKEEP;
+        if (seller[receive] < requested + reserves) return 'У этой клетки недостаточно ресурса для обмена.';
+        const sources = [...this.cells.values()].filter(cell => cell.type === 'channel' && cell.colony.family === buyer.family);
+        if (!sources.length || this.payPlayerConstruction(sources, { energy: 0, organic: 0, [give]: offered })) {
+            return 'В твоих каналах и резерве не хватает ресурсов для обмена.';
+        }
+        seller[give] += offered;
+        seller[receive] -= requested;
+        sources[0][receive] += requested;
+        this.changeFriendliness(seller.colony.family, buyer.family, 8);
+        return 'Обмен выполнен. Полученный ресурс переведён в твой канал.';
     }
 
     makeAttackDeal(index, target, resource, amount) {
@@ -1032,8 +1069,25 @@ export class Simulation {
                 this.algaeContacts.set(key, this.time + 20);
                 const opinion = this.friendliness(from, to);
                 const otherOpinion = this.friendliness(to, from);
+                const fromSize = this.familySizes.get(from) ?? 1;
+                const toSize = this.familySizes.get(to) ?? 1;
+                const unequal = Math.max(fromSize, toSize) >= Math.max(8, 2 * Math.min(fromSize, toSize));
+                const rivals = (Math.min(from, to) + Math.max(from, to) * 3) % 5 === 0;
                 if (opinion <= -15 || otherOpinion <= -15) {
                     this.sayToAlgae(cell, to, 'После стычек мы вам не доверяем. Держитесь подальше от границы.');
+                } else if (unequal && opinion < 20 && otherOpinion < 20) {
+                    if (fromSize < toSize) {
+                        this.familySignals.set(from, this.time + 8);
+                        this.sayToAlgae(cell, to, 'Ваш род гораздо сильнее. Будем держаться от вас подальше.');
+                    } else {
+                        this.sayToAlgae(cell, to, 'Ваш род слишком мал. На союз согласимся только за ресурсы.');
+                        if (this.isAiFamily(to)) this.familySignals.set(to, this.time + 8);
+                    }
+                } else if (rivals && opinion < 20 && otherOpinion < 20 && this.isAiFamily(to)) {
+                    this.changeFriendliness(from, to, -20);
+                    this.changeFriendliness(to, from, -20);
+                    this.sayToAlgae(cell, to, 'Мы претендуем на один участок воды. Готовимся отстаивать границу.');
+                    this.sayToAlgae(contact, from, 'Наш род тоже будет защищать эту воду.');
                 } else if (this.isAiFamily(to) && opinion >= 0 && otherOpinion >= 0) {
                     this.changeFriendliness(from, to, 24);
                     this.changeFriendliness(to, from, 24);
@@ -1043,6 +1097,18 @@ export class Simulation {
                     } else {
                         this.sayToAlgae(cell, to, 'Наша общая граница спокойна. Продолжаем расти рядом.');
                         this.sayToAlgae(contact, from, 'Да, продолжаем сотрудничать.');
+                        const energySource = cell.energy >= 150 && contact.energy < 80 ? cell
+                            : contact.energy >= 150 && cell.energy < 80 ? contact : null;
+                        const organicSource = energySource === cell ? contact : cell;
+                        if (energySource && organicSource.organic >= 150 && energySource.organic < 80) {
+                            energySource.energy -= 25;
+                            organicSource.energy += 25;
+                            organicSource.organic -= 25;
+                            energySource.organic += 25;
+                            this.changeFriendliness(from, to, 4);
+                            this.changeFriendliness(to, from, 4);
+                            this.sayToAlgae(cell, to, 'Обменяли по 25 единиц энергии и органики.');
+                        }
                     }
                 } else {
                     this.sayToAlgae(cell, to, 'Видим вас у границы. Если не будет атак, можем жить рядом.');

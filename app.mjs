@@ -957,11 +957,29 @@ function prepareAlgaeDeal(text) {
     return true;
 }
 
-function executeAlgaeDeal({ family, index, target, resource, amount, kind }) {
+function dealResource(unit) {
+    return /^энерг/i.test(unit) ? 'energy' : 'organic';
+}
+
+function prepareAlgaeTrade(text) {
+    const resources = [...text.matchAll(/(?<![-+\d.,])(\d+)\s*(органик[аи]|мяса?|энерги[ияи])/gi)];
+    if (resources.length !== 2 || !/обменяю|обменяйте|отдам|меняю/i.test(text)) return false;
+    const [, offered, givenUnit] = resources[0];
+    const [, requested, receivedUnit] = resources[1];
+    pendingAlgaeDeal = { kind: 'trade', family: chatFamily, index: chatIndex,
+        give: dealResource(givenUnit), offered: Number(offered), receive: dealResource(receivedUnit), requested: Number(requested) };
+    confirmAlgaeDeal.textContent = `Обменять ${offered} ${givenUnit} на ${requested} ${receivedUnit}`;
+    confirmAlgaeDeal.hidden = false;
+    return true;
+}
+
+function executeAlgaeDeal({ family, index, target, resource, amount, kind, give, offered, receive, requested }) {
     if (!Number.isSafeInteger(index) || simulation.cells.get(index)?.colony.family !== family) {
         return 'Водоросль, с которой ты договаривался, исчезла.';
     }
-    return kind === 'alliance' ? simulation.makeAlliance(index) : simulation.makeAttackDeal(index, target, resource, amount);
+    if (kind === 'alliance') return simulation.makeAlliance(index, resource, amount);
+    if (kind === 'trade') return simulation.makeResourceTrade(index, give, offered, receive, requested);
+    return simulation.makeAttackDeal(index, target, resource, amount);
 }
 
 confirmAlgaeDeal.addEventListener('click', () => {
@@ -1009,10 +1027,14 @@ function sendAlgaeMessage(label) {
     algaeChatTopics.set(chatFamily, topic);
     recordAlgaeReply(chatFamily, label, chatIndex, true);
     if (topic === 'peace') {
-        pendingAlgaeDeal = { kind: 'alliance', family: chatFamily, index: chatIndex };
-        confirmAlgaeDeal.textContent = 'Предложить союз';
+        const payment = /(?<![-+\d.,])(\d+)\s*(органик[аи]|мяса?|энерги[ияи])/i.exec(label);
+        pendingAlgaeDeal = { kind: 'alliance', family: chatFamily, index: chatIndex,
+            ...(payment && { amount: Number(payment[1]), resource: dealResource(payment[2]) }) };
+        confirmAlgaeDeal.textContent = payment ? `Предложить союз за ${payment[1]} ${payment[2]}` : 'Предложить союз';
         confirmAlgaeDeal.hidden = false;
         recordAlgaeReply(chatFamily, 'Ты предлагаешь союз? Подтверди предложение, и мы решим, можем ли сотрудничать.', chatIndex);
+    } else if (topic === 'trade' && prepareAlgaeTrade(label)) {
+        recordAlgaeReply(chatFamily, 'Проверь условия обмена и подтверди предложение.', chatIndex);
     } else if (topic === 'attack_offer' && prepareAlgaeDeal(label)) {
         recordAlgaeReply(chatFamily, 'Проверь условия и подтверди предложение. При согласии плата спишется сразу.', chatIndex);
     } else {
@@ -1527,7 +1549,7 @@ survivalMode.addEventListener('click', () => {
         possessButton.click();
     }
 });
-const ROOM_VERSION = 2;
+const ROOM_VERSION = 3;
 const serverDialog = document.querySelector('#server-dialog');
 const serverStatus = document.querySelector('#server-status');
 const serverCode = document.querySelector('#server-code');
@@ -1544,148 +1566,84 @@ let lastSnapshot = 0;
 let receivedSnapshot = 0;
 const roomGuests = new Map();
 
-const ROOM_DOWNLOAD_ROOT = 'https://raw.githubusercontent.com/Bistry-Yarik/WFO/main/downloads/';
-const UPDATE_CHUNK_SIZE = 64 * 1024;
-const UPDATE_MAX_SIZE = 24 * 1024 * 1024;
-const incomingUpdates = new Map();
-const outgoingUpdates = new Set();
 const roomPeerVersions = new Map();
-
-async function publishedFiles() {
-    const response = await fetch(ROOM_DOWNLOAD_ROOT + 'room-builds.json', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Manifest unavailable');
-    return response.json();
-}
-
-async function verifyUpdate(bytes, expectedHash) {
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-    return Array.from(digest, value => value.toString(16).padStart(2, '0')).join('') === expectedHash;
-}
-
-function receiveRoomUpdate(connection, packet) {
-    const receiving = incomingUpdates.get(connection);
-    if (!receiving || packet.extension !== receiving.extension) return;
-    if (packet.kind === 'update-error') {
-        incomingUpdates.delete(connection);
-        showServerStatus('Передача с компьютера игрока недоступна. Используйте прямую ссылку.');
-        return;
-    }
-    if (packet.kind === 'update-chunk') {
-        const bytes = packet.bytes;
-        if (!(bytes instanceof ArrayBuffer) || bytes.byteLength > UPDATE_CHUNK_SIZE
-                || receiving.size + bytes.byteLength > receiving.file.size) {
-            incomingUpdates.delete(connection);
-            showServerStatus('Передача прервана: неверный размер файла');
-            return;
-        }
-        receiving.size += bytes.byteLength;
-        receiving.chunks.push(bytes);
-        return;
-    }
-    incomingUpdates.delete(connection);
-    const blob = new Blob(receiving.chunks, { type: 'application/octet-stream' });
-    void (async () => {
-        if (blob.size !== receiving.file.size || !(await verifyUpdate(await blob.arrayBuffer(), receiving.file.sha256))) {
-            showServerStatus('Переданный файл не прошёл проверку подлинности');
-            return;
-        }
-        const link = document.createElement('a');
-        const address = URL.createObjectURL(blob);
-        link.href = address;
-        link.download = `WFO.${receiving.extension}`;
-        link.textContent = `Сохранить проверенный ${receiving.extension.toUpperCase()}`;
-        if (window.WfoAndroid?.saveVerifiedBuild) {
-            link.addEventListener('click', event => {
-                event.preventDefault();
-                const reader = new FileReader();
-                reader.onload = () => window.WfoAndroid.saveVerifiedBuild(receiving.extension, reader.result.split(',')[1]);
-                reader.readAsDataURL(blob);
-            });
-        } else {
-            link.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(address), 30000), { once: true });
-        }
-        serverDownloads.append(link);
-        showServerStatus('Сборка с компьютера игрока получена и проверена');
-    })().catch(() => showServerStatus('Не удалось проверить полученную сборку'));
-}
-
-async function sendRoomUpdate(connection, packet) {
-    const { extension } = packet;
-    if (!['exe', 'apk'].includes(extension) || outgoingUpdates.has(connection)) return;
-    outgoingUpdates.add(connection);
-    try {
-        const manifest = await publishedFiles();
-        if (manifest.version !== ROOM_VERSION) throw new Error('Version unavailable');
-        const file = manifest.files[extension];
-        const response = await fetch(ROOM_DOWNLOAD_ROOT + `WFO.${extension}`);
-        if (!response.ok) throw new Error('Build unavailable');
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength !== file.size || bytes.byteLength > UPDATE_MAX_SIZE
-                || !(await verifyUpdate(bytes, file.sha256))) throw new Error('Invalid build');
-        for (let offset = 0; offset < bytes.byteLength; offset += UPDATE_CHUNK_SIZE) {
-            while (connection.open && (connection.bufferSize > 4 || connection.dataChannel.bufferedAmount > 512 * 1024)) {
-                await new Promise(resolve => setTimeout(resolve, 40));
-            }
-            if (!connection.open) return;
-            connection.send({ kind: 'update-chunk', extension, bytes: bytes.slice(offset, offset + UPDATE_CHUNK_SIZE) });
-        }
-        connection.send({ kind: 'update-done', extension });
-    } catch {
-        if (connection.open) connection.send({ kind: 'update-error', extension });
-    } finally {
-        outgoingUpdates.delete(connection);
-    }
-}
-
-function handleUpdatePacket(connection, packet) {
-    if (packet?.kind === 'update-request') {
-        const version = roomPeerVersions.get(connection);
-        if (version < ROOM_VERSION) void sendRoomUpdate(connection, packet);
-    } else if (['update-chunk', 'update-done', 'update-error'].includes(packet?.kind)) {
-        receiveRoomUpdate(connection, packet);
-    } else return false;
-    return true;
-}
+const serverPing = document.querySelector('#server-ping');
+const serverPublicAddress = document.querySelector('#server-public-address');
+let pingTimer;
 
 function showServerStatus(message) {
     serverStatus.textContent = message;
     gameStatus.textContent = message;
 }
 
-function showVersionMismatch(version, connection) {
+function showVersionMismatch(version) {
     showServerStatus(version > ROOM_VERSION
         ? 'У другого игрока версия новее. Обновите WFO перед подключением.'
         : 'У другого игрока версия старее. Ему нужно обновить WFO.');
     serverDownloads.replaceChildren();
-    for (const extension of ['EXE', 'APK']) {
+    const downloads = [
+        ['Скачать Windows ZIP', 'https://cdn.jsdelivr.net/gh/Bistry-Yarik/WFO@main/downloads/WFO-windows.zip'],
+        ['Скачать APK', 'https://cdn.jsdelivr.net/gh/Bistry-Yarik/WFO@main/downloads/WFO.apk']
+    ];
+    for (const [text, url] of downloads) {
         const link = document.createElement('a');
-        link.href = `https://raw.githubusercontent.com/Bistry-Yarik/WFO/main/downloads/WFO.${extension.toLowerCase()}`;
-        link.textContent = `Скачать актуальный ${extension}`;
+        link.href = url;
+        link.textContent = text;
         link.target = '_blank';
         link.rel = 'noopener';
         serverDownloads.append(link);
-        if (version <= ROOM_VERSION || !crypto.subtle) continue;
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = `Получить ${extension} от игрока`;
-        button.addEventListener('click', async () => {
-            const format = extension.toLowerCase();
-            try {
-                if (!connection.open || incomingUpdates.has(connection)) throw new Error('Transfer unavailable');
-                const manifest = await publishedFiles();
-                const file = manifest.files[format];
-                if (manifest.version !== version || file.size > UPDATE_MAX_SIZE) throw new Error('Version unavailable');
-                incomingUpdates.set(connection, { extension: format, file, size: 0, chunks: [] });
-                connection.send({ kind: 'update-request', extension: format });
-                showServerStatus('Получение сборки от игрока…');
-            } catch {
-                showServerStatus('Эта сборка недоступна для передачи. Можно открыть прямую ссылку.');
-            }
-        });
-        serverDownloads.append(button);
     }
     if (!serverDialog.open) serverDialog.showModal();
 }
+
+function addRoomLink(url, container = serverDownloads) {
+    const row = document.createElement('div');
+    row.className = 'server-link';
+    const link = document.createElement('a');
+    link.href = url;
+    link.textContent = url;
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Скопировать ссылку';
+    copy.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(url);
+            copy.textContent = 'Скопировано';
+        } catch {
+            const input = row.querySelector('input') ?? document.createElement('input');
+            input.value = url;
+            input.readOnly = true;
+            if (link.parentNode === row) row.replaceChild(input, link);
+            input.select();
+            if (document.execCommand('copy')) copy.textContent = 'Скопировано';
+            else copy.textContent = 'Скопируй выделенную ссылку';
+        }
+    });
+    row.append(link, copy);
+    container.append(row);
+}
+
+function roomInvite(address, code) {
+    const url = new URL(address.includes('://') ? address : 'http://' + address);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+    if (!address.includes('://') && !url.port) url.port = '8765';
+    url.pathname = '/';
+    url.search = new URLSearchParams({ room: code });
+    url.hash = '';
+    return url;
+}
+
+const publicLink = document.querySelector('#server-public-link');
+serverPublicAddress.addEventListener('input', () => {
+    publicLink.replaceChildren();
+    const address = serverPublicAddress.value.trim();
+    if (!roomHost || !address) return;
+    try {
+        addRoomLink(roomInvite(address, roomCode).href, publicLink);
+    } catch {
+        publicLink.textContent = 'Укажи внешний IP с портом или адрес HTTPS-туннеля.';
+    }
+});
 
 function closeRoom() {
     const peer = roomPeer;
@@ -1693,7 +1651,9 @@ function closeRoom() {
     roomHost = false;
     hostConnection = null;
     roomGuests.clear();
-    incomingUpdates.clear();
+    clearInterval(pingTimer);
+    serverPing.textContent = '';
+    publicLink.replaceChildren();
     roomPeerVersions.clear();
     simulation.manualFamilies.clear();
     roomCode = null;
@@ -1731,13 +1691,12 @@ function guestSurvival() {
 }
 
 function receiveGuest(connection, packet) {
-    if (handleUpdatePacket(connection, packet)) return;
     if (packet?.kind === 'hello' && !roomGuests.has(connection)) {
         if (!Number.isSafeInteger(packet.version) || roomPeerVersions.has(connection)) return;
         roomPeerVersions.set(connection, packet.version);
         if (packet.version !== ROOM_VERSION) {
             connection.send({ kind: 'version', version: ROOM_VERSION });
-            showVersionMismatch(packet.version, connection);
+            showVersionMismatch(packet.version);
             return;
         }
         const guest = guestSurvival();
@@ -1752,6 +1711,10 @@ function receiveGuest(connection, packet) {
     }
     const guest = roomGuests.get(connection);
     if (!guest) return;
+    if (packet?.kind === 'ping' && Number.isFinite(packet.sent)) {
+        connection.send({ kind: 'pong', sent: packet.sent });
+        return;
+    }
     if (guest.lost) return;
     if (packet?.kind === 'player-chat') {
         if (!Number.isSafeInteger(packet.to) || typeof packet.text !== 'string'
@@ -1813,12 +1776,18 @@ async function broadcastRoom(now) {
 }
 
 async function receiveHost(connection, packet) {
-    if (connection !== hostConnection || handleUpdatePacket(connection, packet)) return;
+    if (connection !== hostConnection) return;
     if (packet?.kind === 'version' && Number.isSafeInteger(packet.version)) {
         roomPeerVersions.set(connection, packet.version);
-        showVersionMismatch(packet.version, connection);
+        showVersionMismatch(packet.version);
+    } else if (packet?.kind === 'pong' && Number.isFinite(packet.sent)) {
+        serverPing.textContent = `Пинг: ${Math.max(0, Math.round(performance.now() - packet.sent))} мс`;
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
+        clearInterval(pingTimer);
+        const ping = () => connection.send({ kind: 'ping', sent: performance.now() });
+        ping();
+        pingTimer = setInterval(ping, 2000);
     } else if (packet?.kind === 'player-chat' && Number.isSafeInteger(packet.from)
             && typeof packet.text === 'string' && packet.text.length <= 160) {
         const sender = Array.from(simulation.cells.values()).find(cell => cell.colony.family === packet.from);
@@ -1851,7 +1820,7 @@ async function receiveHost(connection, packet) {
 
 function encodeRoomPacket(packet) {
     const encoded = { ...packet };
-    for (const key of ['bytes', 'payload']) {
+    for (const key of ['payload']) {
         if (!(encoded[key] instanceof ArrayBuffer)) continue;
         const bytes = new Uint8Array(encoded[key]);
         const parts = [];
@@ -1864,7 +1833,7 @@ function encodeRoomPacket(packet) {
 }
 
 function decodeRoomPacket(packet) {
-    for (const key of ['bytes', 'payload']) {
+    for (const key of ['payload']) {
         if (typeof packet[key] === 'string') packet[key] = Uint8Array.from(atob(packet[key]), character => character.charCodeAt(0)).buffer;
     }
     return packet;
@@ -1882,12 +1851,8 @@ function startHostSession(code, info) {
     setPaused(false);
     updateGameControls();
     serverAddress.value = info.urls?.length ? new URL(info.urls[0]).host : '127.0.0.1:8765';
-    for (const url of info.urls ?? []) {
-        const link = document.createElement('a');
-        link.href = url;
-        link.textContent = url;
-        serverDownloads.append(link);
-    }
+    for (const url of info.urls ?? []) addRoomLink(url);
+    serverPublicAddress.dispatchEvent(new Event('input'));
     showServerStatus(`Сервер ${code} запущен на этом ПК · игроков: 1`);
 
     function addGuest(id) {
@@ -1896,7 +1861,6 @@ function startHostSession(code, info) {
         const connection = {
             get open() { return roomPeer === session && peers.has(id); },
             get bufferSize() { return pending; },
-            dataChannel: { get bufferedAmount() { return pending * UPDATE_CHUNK_SIZE; } },
             send(packet) {
                 if (!this.open) return;
                 const encoded = encodeRoomPacket(packet);
@@ -1924,7 +1888,6 @@ function startHostSession(code, info) {
                     catch { showServerStatus('Получено некорректное сообщение гостя'); }
                 }
                 if (kind === 'gone' && connection) {
-                    incomingUpdates.delete(connection);
                     roomPeerVersions.delete(connection);
                     const guest = roomGuests.get(connection);
                     if (guest) simulation.manualFamilies.delete(guest.family);
@@ -1945,7 +1908,7 @@ function startHostSession(code, info) {
 }
 
 function startGuestSession(code, address) {
-    address.protocol = 'ws:';
+    address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
     address.pathname = '/room';
     address.search = new URLSearchParams({ code });
     address.hash = '';
@@ -1956,8 +1919,7 @@ function startGuestSession(code, address) {
     roomHost = false;
     const connection = {
         get open() { return socket.readyState === WebSocket.OPEN; },
-        get bufferSize() { return socket.bufferedAmount / UPDATE_CHUNK_SIZE; },
-        dataChannel: socket,
+        get bufferSize() { return socket.bufferedAmount / 65536; },
         send(packet) {
             if (this.open) socket.send(JSON.stringify({ kind: 'packet', packet: encodeRoomPacket(packet) }));
         }
@@ -2010,14 +1972,12 @@ async function openRoom(hosting) {
     if (!hosting) {
         try {
             const input = serverAddress.value.trim();
-            address = new URL(input.includes('://') ? input : 'http://' + input);
-            if (address.protocol !== 'http:' || address.username || address.password) throw new Error();
-            if (!address.port) address.port = '8765';
+            address = roomInvite(input, code);
         } catch {
             showServerStatus('Введите адрес компьютера хоста, например 192.168.1.10:8765');
             return;
         }
-        if (location.protocol === 'https:') {
+        if (location.protocol === 'https:' && address.protocol === 'http:') {
             const link = document.createElement('a');
             address.pathname = '/';
             address.search = new URLSearchParams({ room: code });
@@ -2045,9 +2005,9 @@ async function openRoom(hosting) {
 }
 
 const invitationCode = new URLSearchParams(location.search).get('room');
-if (location.protocol === 'http:' && invitationCode) {
+if (['http:', 'https:'].includes(location.protocol) && invitationCode) {
     serverCode.value = invitationCode;
-    serverAddress.value = location.host;
+    serverAddress.value = location.origin;
     queueMicrotask(() => {
         serverDialog.showModal();
         void openRoom(false);
