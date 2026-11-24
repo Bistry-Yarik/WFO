@@ -409,6 +409,46 @@ function draw(allowWorker = false) {
     screen.fillStyle = pattern;
     screen.fillRect(0, 0, field.width, field.height);
     if (vectorDetail) drawVisibleCells(matrix);
+    drawAlgaeMessages(matrix);
+}
+
+function drawAlgaeMessages(matrix) {
+    const now = simulation.time;
+    while (algaeBubbles.length && algaeBubbles[0].time + 5 <= now) algaeBubbles.shift();
+    const signals = simulation.algaeMessages.filter(message => Number.isInteger(message.index) && message.time + 5 > now);
+    if (!algaeBubbles.length && !signals.length) return;
+    const messages = signals.map(message => ({ ...message,
+        color: message.to === simulation.survival?.family ? '#fff' : '#a5aaa8'
+    })).concat(algaeBubbles).slice(-12);
+    const worldCenter = matrix.inverse().transformPoint({ x: field.width / 2, y: field.height / 2 });
+    const offsets = new Map();
+    const maxChars = Math.max(10, Math.min(44, Math.floor(field.width / 8)));
+    screen.save();
+    screen.font = '13px system-ui, sans-serif';
+    screen.textAlign = 'center';
+    screen.textBaseline = 'middle';
+    for (const { index, text, color } of messages.reverse()) {
+        const x = index % simulation.width + 0.5;
+        const y = Math.floor(index / simulation.width) + 0.5;
+        const point = matrix.transformPoint({
+            x: x + Math.round((worldCenter.x - x) / simulation.width) * simulation.width,
+            y: y + Math.round((worldCenter.y - y) / simulation.height) * simulation.height
+        });
+        if (point.x < 0 || point.x > field.width || point.y < 0 || point.y > field.height) continue;
+        const lines = Array.from(text.trim().matchAll(new RegExp(`.{1,${maxChars}}(?:\\s|$)|.{1,${maxChars}}`, 'gu')), match => match[0].trim());
+        if (!lines.length) continue;
+        const width = Math.min(field.width, Math.max(...lines.map(line => screen.measureText(line).width)) + 12);
+        const height = 8 + lines.length * 17;
+        const left = Math.max(0, Math.min(field.width - width, point.x - width / 2));
+        const offset = offsets.get(index) ?? 0;
+        const top = Math.max(0, point.y - Math.max(8, camera.zoom / 2) - height - offset);
+        offsets.set(index, offset + height + 3);
+        screen.fillStyle = '#101d18e8';
+        screen.fillRect(left, top, width, height);
+        screen.fillStyle = color;
+        lines.forEach((line, row) => screen.fillText(line, left + width / 2, top + 12 + row * 17, width - 8));
+    }
+    screen.restore();
 }
 
 function drawVisibleCells(matrix) {
@@ -795,6 +835,10 @@ const algaeChat = document.querySelector('#algae-chat');
 const algaeChatLog = document.querySelector('#algae-chat-log');
 const algaeChatTitle = document.querySelector('#algae-chat-title');
 const algaeChatActions = document.querySelector('#algae-chat-actions');
+const algaeChatCompose = document.querySelector('#algae-chat-compose');
+const algaeChatInput = document.querySelector('#algae-chat-input');
+const algaeBubbles = [];
+let chatIndex = -1;
 const algaeReplies = new Map();
 let chatFamily = null;
 let renderedChat = '';
@@ -811,9 +855,9 @@ function renderAlgaeChat() {
     const signature = JSON.stringify(entries);
     if (signature === renderedChat) return;
     renderedChat = signature;
-    algaeChatLog.replaceChildren(...entries.map(({ text, direct }) => {
+    algaeChatLog.replaceChildren(...entries.map(({ text, direct, outgoing }) => {
         const line = document.createElement('p');
-        line.className = direct ? 'to-player' : 'between-algae';
+        line.className = outgoing ? 'from-player' : direct ? 'to-player' : 'between-algae';
         line.textContent = text;
         return line;
     }));
@@ -824,6 +868,8 @@ function openAlgaeChat(index) {
     const cell = simulation.cells.get(index);
     if (!cell || document.querySelector('dialog[open]')) return false;
     chatFamily = cell.colony.family;
+    chatIndex = index;
+    algaeChatInput.value = '';
     algaeChatTitle.textContent = `Водоросль · род ${chatFamily}`;
     renderedChat = '';
     chatCanClick = false;
@@ -832,10 +878,14 @@ function openAlgaeChat(index) {
     return true;
 }
 
-function recordAlgaeReply(family, reply) {
+function recordAlgaeReply(family, reply, index, outgoing = false) {
     if (!algaeReplies.has(family) && algaeReplies.size >= 32) algaeReplies.delete(algaeReplies.keys().next().value);
     const history = algaeReplies.get(family) ?? [];
-    history.push({ text: reply, direct: true });
+    history.push({ text: reply, direct: !outgoing, outgoing });
+    if (Number.isInteger(index) && index >= 0 && index < simulation.energy.length) {
+        algaeBubbles.push({ index, text: reply, color: outgoing ? '#a4ecc0' : '#fff', time: simulation.time });
+        if (algaeBubbles.length > 24) algaeBubbles.shift();
+    }
     if (history.length > 24) history.shift();
     algaeReplies.set(family, history);
     renderAlgaeChat();
@@ -850,15 +900,26 @@ algaeChat.addEventListener('click', event => {
     chatCanClick = false;
 }, true);
 
+function sendAlgaeMessage(question, label) {
+    recordAlgaeReply(chatFamily, label, chatIndex, true);
+    if (roomPeer && !roomHost) {
+        if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question, index: chatIndex });
+    } else {
+        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question), chatIndex);
+    }
+}
+
 algaeChatActions.addEventListener('click', event => {
     const button = event.target.closest('button[data-question]');
-    if (!button) return;
-    const { question } = button.dataset;
-    if (roomPeer && !roomHost) {
-        if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question });
-    } else {
-        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question));
-    }
+    if (button) sendAlgaeMessage(button.dataset.question, button.textContent);
+});
+
+algaeChatCompose.addEventListener('submit', event => {
+    event.preventDefault();
+    const text = algaeChatInput.value.trim().slice(0, 160);
+    if (!text) return;
+    sendAlgaeMessage(text, text);
+    algaeChatInput.value = '';
 });
 
 function startPinch() {
@@ -1255,6 +1316,7 @@ speed.addEventListener('change', resetSpeedSample);
 document.addEventListener('visibilitychange', resetSpeedSample);
 function applyGame(nextSimulation) {
     algaeReplies.clear();
+    algaeBubbles.length = 0;
     deathEffects.clear();
     simulation = nextSimulation;
     if (worldAudio) {
@@ -1579,8 +1641,11 @@ function receiveGuest(connection, packet) {
     const guest = roomGuests.get(connection);
     if (!guest) return;
     if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family)
-            && ['hello', 'size', 'danger'].includes(packet.question)) {
-        connection.send({ kind: 'chat', family: packet.family, reply: simulation.talkToAlgae(packet.family, packet.question) });
+            && typeof packet.question === 'string' && packet.question.trim() && packet.question.length <= 160) {
+        const index = Number.isSafeInteger(packet.index) && simulation.cells.get(packet.index)?.colony.family === packet.family
+            ? packet.index : null;
+        connection.send({ kind: 'chat', family: packet.family, index,
+            reply: simulation.talkToAlgae(packet.family, packet.question) });
         return;
     }
     if (guest.lost) return;
@@ -1629,7 +1694,7 @@ async function receiveHost(connection, packet) {
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
     } else if (packet?.kind === 'chat' && Number.isSafeInteger(packet.family) && typeof packet.reply === 'string') {
-        recordAlgaeReply(packet.family, packet.reply);
+        recordAlgaeReply(packet.family, packet.reply, packet.index);
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {

@@ -792,7 +792,7 @@ export class Simulation {
             return { turn, site };
         });
         if (this.aiEnabled) {
-            for (const candidate of candidates) candidate.score = this.aiGrowthScore(candidate.site, cell.colony.family, false);
+            for (const candidate of candidates) candidate.score = this.aiGrowthScore(candidate.site, cell.colony.family, false, cell.index);
             candidates.sort((a, b) => b.score - a.score);
         }
         for (const { turn, site } of candidates) {
@@ -899,19 +899,24 @@ export class Simulation {
     talkToAlgae(family, question) {
         if (!this.families.has(family)) return 'Эта водоросль исчезла.';
         if (!this.aiEnabled) return 'Включи «ИИ водорослей», чтобы они могли отвечать.';
-        if (question === 'size') {
+        const text = question.toLowerCase();
+        if (question === 'size' || /размер|сколько.*клет|большие|size/.test(text)) {
             const count = this.familySizes.get(family) ?? 1;
             return `Наш размер — ${count} клеток.`;
         }
-        if (question === 'danger') {
+        if (question === 'danger' || /границ|опас|враг|сосед|danger/.test(text)) {
             return (this.familySignals.get(family) ?? 0) > this.time
                 ? 'У границы замечена колония крупнее нас. Ищем другой путь.'
                 : 'Сейчас тревожных сигналов на нашей границе нет.';
         }
-        return 'Мы тебя слышим. Будем искать воду с доступными ресурсами.';
+        if (/энерг|органик|ресурс|grow|resource|расти|рост/.test(text)) {
+            return 'Ищем воду, где хватает энергии и органики для новых клеток.';
+        }
+        if (question === 'hello' || /привет|здравств|hello/.test(text)) return 'Привет! Мы тебя слышим.';
+        return 'Я могу рассказать о размере колонии, соседях и ресурсах.';
     }
 
-    aiGrowthScore(index, family, aggressive) {
+    aiGrowthScore(index, family, aggressive, senderIndex) {
         const size = this.familySizes.get(family) ?? 1;
         let score = this.isSeedSiteSafe(index) ? 0 : -100;
         score += Math.min(this.energy[index], 1000) / 1000;
@@ -924,7 +929,7 @@ export class Simulation {
             if (rivalSize > size) {
                 // A border channel broadcasts an alarm for nearby families to read.
                 if ((this.familySignals.get(family) ?? 0) <= this.time) {
-                    this.algaeMessages.push({ from: family, to: rival, text: 'Мы заметили вас у границы.' });
+                    this.algaeMessages.push({ from: family, to: rival, index: senderIndex, time: this.time, text: 'Мы заметили вас у границы.' });
                     if (this.algaeMessages.length > 64) this.algaeMessages.shift();
                 }
                 this.familySignals.set(family, this.time + 4);
@@ -951,7 +956,7 @@ export class Simulation {
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const biting = Boolean(TOOTH_RESOURCE[type]);
         if (this.aiEnabled) {
-            const scores = new Map(ordered.map(index => [index, this.aiGrowthScore(index, cell.colony.family, biting)]));
+            const scores = new Map(ordered.map(index => [index, this.aiGrowthScore(index, cell.colony.family, biting, cell.index)]));
             ordered.sort((a, b) => scores.get(b) - scores.get(a));
         }
         const host = biting ? this.findToothHost(ordered, cell.colony.family) : null;
