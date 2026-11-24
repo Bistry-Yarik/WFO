@@ -1239,7 +1239,7 @@ autoDonate.addEventListener('click', () => {
     if (roomPeer && !roomHost) hostConnection?.send({ kind: 'autoDonate', enabled: simulation.survival.autoDonate });
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
-        ? 'Твои каналы и рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
+        ? 'Каналы одной связанной сети и её рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
 });
 survivalMode.addEventListener('click', () => {
     if (!roomHost) {

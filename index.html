@@ -571,9 +571,8 @@ class Simulation {
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return 'Постройте рядом со своим каналом';
         const cost = type === 'seed' ? SEED_COST : type === 'channel' ? CHANNEL_COST : CELL_COST;
-        const shortage = this.fundPlayerConstruction(channels, cost);
+        const { parent, shortage } = this.fundPlayerConstruction(channels, cost);
         if (shortage) return shortage;
-        const parent = channels[0];
         if (type === 'seed') {
             this.placeSeedAt(index, parent.colony, cost);
         } else {
@@ -593,39 +592,45 @@ class Simulation {
         const channels = THROW_OFFSETS.map(([dx, dy]) => this.cells.get(this.wrappedIndex(x + dx, y + dy)))
             .filter(cell => cell?.type === 'channel' && cell.colony.family === family);
         if (!channels.length) return `В радиусе ${SEED_THROW_RANGE} клеток нет твоего канала`;
-        const shortage = this.fundPlayerConstruction(channels, THROWN_SEED_COST);
+        const { parent, shortage } = this.fundPlayerConstruction(channels, THROWN_SEED_COST);
         if (shortage) return shortage;
-        this.placeSeedAt(index, channels[0].colony, THROWN_SEED_COST);
+        this.placeSeedAt(index, parent.colony, THROWN_SEED_COST);
         return '';
     }
 
     fundPlayerConstruction(channels, cost) {
-        const sources = [...channels];
-        const visited = new Set(sources);
-        if (this.survival.autoDonate) {
-            const collectors = [];
-            for (const collection of [this.cells, this.parasites]) {
-                for (const cell of collection.values()) {
-                    if (cell.colony.family !== this.survival.family || cell.type === 'seed' || visited.has(cell)) continue;
-                    if (cell.type === 'channel') sources.push(cell);
-                    else collectors.push(cell);
-                }
-            }
-            for (const cell of collectors) sources.push(cell);
-        } else {
-            const queue = [...sources];
-            for (const channel of queue) {
+        const anchors = new Set(channels);
+        const visited = new Set();
+        let shortage;
+        for (const parent of channels) {
+            if (visited.has(parent)) continue;
+            const network = [parent];
+            const sources = [];
+            const workers = new Set();
+            visited.add(parent);
+            for (const channel of network) {
+                if (anchors.has(channel) || channel.constructionDonor || this.survival.autoDonate) sources.push(channel);
                 for (const index of this.neighbors(channel.index)) {
                     const neighbor = this.cells.get(index);
-                    if (neighbor?.type !== 'channel' || neighbor.colony.family !== channel.colony.family
-                            || visited.has(neighbor)) continue;
-                    visited.add(neighbor);
-                    queue.push(neighbor);
-                    if (neighbor.constructionDonor) sources.push(neighbor);
+                    if (!neighbor || neighbor.colony.family !== parent.colony.family) continue;
+                    if (neighbor.type === 'channel') {
+                        if (visited.has(neighbor)) continue;
+                        visited.add(neighbor);
+                        network.push(neighbor);
+                    } else if (this.survival.autoDonate && neighbor.type !== 'seed') {
+                        workers.add(neighbor);
+                    }
                 }
             }
+            for (const worker of workers) sources.push(worker);
+            const error = this.payPlayerConstruction(sources, cost);
+            if (!error) return { parent, shortage: '' };
+            shortage ??= error;
         }
+        return { shortage };
+    }
 
+    payPlayerConstruction(sources, cost) {
         let remainingEnergy = cost.energy;
         let remainingOrganic = cost.organic;
         const payments = [];
@@ -3119,7 +3124,7 @@ autoDonate.addEventListener('click', () => {
     if (roomPeer && !roomHost) hostConnection?.send({ kind: 'autoDonate', enabled: simulation.survival.autoDonate });
     updateGameControls();
     gameStatus.textContent = simulation.survival.autoDonate
-        ? 'Твои каналы и рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
+        ? 'Каналы одной связанной сети и её рабочие клетки выделяют ресурсы на стройку' : 'Автовыделение ресурсов отключено';
 });
 survivalMode.addEventListener('click', () => {
     if (!roomHost) {
