@@ -896,10 +896,35 @@ export class Simulation {
         }
     }
 
-    talkToAlgae(family, question) {
+    talkToAlgae(family, question, index) {
         if (!this.families.has(family)) return 'Эта водоросль исчезла.';
         if (!this.aiEnabled) return 'Включи «ИИ водорослей», чтобы они могли отвечать.';
         const text = question.toLowerCase();
+        if (/радиац|облуч|радиоактив|radiation/.test(text)) {
+            const site = this.cells.get(index)?.colony.family === family
+                ? index : [...this.cells.values()].find(cell => cell.colony.family === family)?.index;
+            if (site === undefined) return 'У меня пока нет данных о радиации вокруг нас.';
+            const x = site % this.width;
+            const y = Math.floor(site / this.width);
+            let peak = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    peak = Math.max(peak, this.radiation[this.wrappedIndex(x + dx, y + dy)]);
+                }
+            }
+            const status = peak > RADIATION_LETHAL_ABOVE ? 'Есть смертельно опасные пиксели'
+                : peak >= CLEANER_GROWTH_RADIATION ? 'Здесь пригодится очиститель'
+                    : 'Поблизости уровень низкий';
+            return `${status}. Максимум в зоне 3×3 — ${Math.floor(peak)} рад.`;
+        }
+        if (/хлор[оа]?фил|chlorophyll/.test(text)) {
+            let count = 0;
+            for (const cell of this.cells.values()) {
+                if (cell.colony.family === family && cell.type === 'chlorophyll') count++;
+            }
+            const prefix = /совету|больше|постав|добав|выраст/.test(text) ? 'Спасибо за совет. ' : '';
+            return `${prefix}Хлорофилл поможет получать энергию даже в бедной воде. У нас таких клеток: ${count}.`;
+        }
         if (question === 'size' || /размер|сколько.*клет|большие|size/.test(text)) {
             const count = this.familySizes.get(family) ?? 1;
             return `Наш размер — ${count} клеток.`;

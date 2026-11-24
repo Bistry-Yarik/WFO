@@ -905,7 +905,7 @@ function sendAlgaeMessage(question, label) {
     if (roomPeer && !roomHost) {
         if (hostConnection?.open) hostConnection.send({ kind: 'chat', family: chatFamily, question, index: chatIndex });
     } else {
-        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question), chatIndex);
+        recordAlgaeReply(chatFamily, simulation.talkToAlgae(chatFamily, question, chatIndex), chatIndex);
     }
 }
 
@@ -1645,7 +1645,7 @@ function receiveGuest(connection, packet) {
         const index = Number.isSafeInteger(packet.index) && simulation.cells.get(packet.index)?.colony.family === packet.family
             ? packet.index : null;
         connection.send({ kind: 'chat', family: packet.family, index,
-            reply: simulation.talkToAlgae(packet.family, packet.question) });
+            reply: simulation.talkToAlgae(packet.family, packet.question, index) });
         return;
     }
     if (guest.lost) return;
