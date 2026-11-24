@@ -1954,7 +1954,8 @@ const simulationTasks = new MessageChannel();
 const FAST_DRAW_INTERVAL = 1000 / 30;
 const COMPUTE_PRIORITY_DRAW_INTERVAL = 1000 / 20;
 const DENSE_DRAW_INTERVAL = 100;
-const MAX_BACKLOG_SECONDS = 0.1;
+const MAX_BACKLOG_SECONDS = 0.5;
+const TERRAIN_WORKER_MIN_CELLS = 10_000;
 const DEATH_EFFECT_MS = 650;
 const MAX_DEATH_EFFECTS = 160;
 const OVERVIEW_MAX_ZOOM = 2;
@@ -2182,7 +2183,82 @@ function drawOverview() {
     return terrain;
 }
 
-function draw() {
+function colorTerrain(pixels, { energy, organic, radiation, daylight, width, soilLimit, useOverview, tintWeight, paleLimit }) {
+    for (let index = 0; index < energy.length; index++) {
+        const blue = Math.min(energy[index] / soilLimit, 1);
+        const red = Math.min(organic[index] / soilLimit, 1);
+        const green = Math.min(radiation[index] * tintWeight / soilLimit, 1);
+        const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
+        const offset = index * 4;
+        const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
+            || radiation[index] >= paleLimit;
+        const pale = concentrated ? 0.46 : 0;
+        pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
+        pixels[offset + 3] = 255;
+    }
+}
+
+let terrainWorker;
+let terrainRequest;
+let terrainFrame;
+
+function paintTerrain(pixels, inputs, allowWorker) {
+    const { energy, organic, radiation, daylight, soilLimit, useOverview } = inputs;
+    if (allowWorker === true && energy.length >= TERRAIN_WORKER_MIN_CELLS) {
+        if (terrainWorker === undefined) {
+            try {
+                const source = `${colorTerrain.toString()}
+                    self.onmessage = ({ data }) => {
+                        const result = new Uint8ClampedArray(data.energy.length * 4);
+                        colorTerrain(result, data);
+                        self.postMessage(result, [result.buffer]);
+                    };`;
+                const address = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+                try {
+                    terrainWorker = new Worker(address);
+                } finally {
+                    URL.revokeObjectURL(address);
+                }
+                terrainWorker.onmessage = ({ data }) => {
+                    terrainFrame = { ...terrainRequest, data };
+                    terrainRequest = null;
+                };
+                terrainWorker.onerror = () => {
+                    terrainWorker.terminate();
+                    terrainWorker = null;
+                    terrainRequest = null;
+                    terrainFrame = null;
+                };
+            } catch {
+                terrainWorker = null;
+            }
+        }
+        if (terrainWorker) {
+            if (!terrainRequest && (terrainFrame?.world !== simulation || terrainFrame.time !== simulation.time
+                    || terrainFrame.soilLimit !== soilLimit || terrainFrame.useOverview !== useOverview)) {
+                const energyCopy = energy.slice();
+                const organicCopy = organic.slice();
+                const radiationCopy = radiation.slice();
+                terrainRequest = { world: simulation, time: simulation.time, daylight, soilLimit, useOverview };
+                terrainWorker.postMessage({ ...inputs, energy: energyCopy, organic: organicCopy, radiation: radiationCopy },
+                    [energyCopy.buffer, organicCopy.buffer, radiationCopy.buffer]);
+            }
+            if (terrainFrame?.world === simulation && terrainFrame.daylight === daylight
+                    && terrainFrame.soilLimit === soilLimit && terrainFrame.useOverview === useOverview) {
+                pixels.set(terrainFrame.data);
+                return;
+            }
+        }
+    } else {
+        terrainFrame = null;
+        if (terrainRequest) terrainRequest.world = null;
+    }
+    colorTerrain(pixels, inputs);
+}
+
+function draw(allowWorker = false) {
     const pixels = terrainPixels.data;
     const { energy, organic, radiation, daylight, width } = simulation;
     const soilLimit = simulation.limits.soil;
@@ -2196,20 +2272,8 @@ function draw() {
         || (graphicsMode.value === 'auto' && pixelsPerCell < VECTOR_DETAIL_ZOOM && autoOverview);
     const vectorDetail = !useOverview && (graphicsMode.value === 'detail'
         || pixelsPerCell >= VECTOR_DETAIL_ZOOM || visibleArea < energy.length);
-    for (let index = 0; index < energy.length; index++) {
-        const blue = Math.min(energy[index] / soilLimit, 1);
-        const red = Math.min(organic[index] / soilLimit, 1);
-        const green = Math.min(radiation[index] * RADIATION_TINT_WEIGHT / soilLimit, 1);
-        const checker = !useOverview && (index % width + Math.floor(index / width)) % 2 === 0 ? 4 : 0;
-        const offset = index * 4;
-        const concentrated = energy[index] >= soilLimit || organic[index] >= soilLimit
-            || radiation[index] >= RADIATION_PALE_LIMIT;
-        const pale = concentrated ? 0.46 : 0;
-        pixels[offset] = (16 + checker + 166 * red + 24 * green + 20 * blue) * (1 - pale) + 255 * pale;
-        pixels[offset + 1] = ((daylight ? 29 : 19) + checker + 20 * red + 155 * green + 40 * blue) * (1 - pale) + 255 * pale;
-        pixels[offset + 2] = ((daylight ? 24 : 32) + checker + 36 * red + 30 * green + 175 * blue) * (1 - pale) + 255 * pale;
-        pixels[offset + 3] = 255;
-    }
+    paintTerrain(pixels, { energy, organic, radiation, daylight, width, soilLimit, useOverview,
+        tintWeight: RADIATION_TINT_WEIGHT, paleLimit: RADIATION_PALE_LIMIT }, allowWorker);
     let tile;
     if (vectorDetail) {
         terrainContext.putImageData(terrainPixels, 0, 0);
@@ -3766,10 +3830,6 @@ fieldSizeForm.addEventListener('submit', event => {
 });
 document.querySelector('#reset').addEventListener('click', () => restart(simulation.width));
 
-function continuousSpeed() {
-    return boostCompute.checked ? BOOST_SPEED : CONTINUOUS_SPEED;
-}
-
 function runSimulationSlice(multiplier) {
     const now = performance.now();
     elapsed = Math.min(elapsed + (now - simulationUpdatedAt) / 1000 * multiplier,
@@ -3788,7 +3848,7 @@ function runSimulationSlice(multiplier) {
         }
         elapsed -= STEP;
     }
-    if (multiplier >= continuousSpeed() && elapsed >= STEP) {
+    if (elapsed >= STEP && (boostCompute.checked || multiplier >= CONTINUOUS_SPEED)) {
         simulationTaskPending = true;
         simulationTasks.port2.postMessage(null);
     }
@@ -3797,7 +3857,7 @@ function runSimulationSlice(multiplier) {
 simulationTasks.port1.onmessage = () => {
     simulationTaskPending = false;
     const multiplier = Number(speed.value);
-    if (!paused && (!roomPeer || roomHost) && !document.hidden && multiplier >= continuousSpeed()) runSimulationSlice(multiplier);
+    if (!paused && (!roomPeer || roomHost) && !document.hidden && (boostCompute.checked || multiplier >= CONTINUOUS_SPEED)) runSimulationSlice(multiplier);
 };
 
 function frame(now) {
@@ -3828,7 +3888,7 @@ function frame(now) {
     const boosted = !paused && boostCompute.checked && multiplier >= BOOST_SPEED;
     if (boosted) drawInterval = Math.max(drawInterval, BOOST_DRAW_INTERVAL);
     if ((!boosted && multiplier <= 100) || cameraKeys.size || press || pinch || now - lastDraw >= drawInterval) {
-        draw();
+        draw(!paused && multiplier >= BOOST_SPEED);
         updateReadout();
         lastDraw = now;
     }
