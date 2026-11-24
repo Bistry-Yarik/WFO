@@ -2,12 +2,12 @@
   "version": 2,
   "files": {
     "apk": {
-      "size": 1159728,
-      "sha256": "b2f9d2577861ec2826740ed3354682fd2ffaff5673aeb4a38ee3c6f9110865e7"
+      "size": 1196592,
+      "sha256": "df2e93d5b382cf5251cc1ea54ce9a02a5e96df404ef787d96ca1ab2d53f09f3f"
     },
     "exe": {
-      "size": 7211520,
-      "sha256": "31335f1c76108a175ca24ff029983dbf3f4f423b8555588fd8b210e2290f87b6"
+      "size": 7288832,
+      "sha256": "90cc7aae099ad22fb1ba6d3e8edbb40ebb02469cff0bdee5b0f405cc8fea9995"
     }
   }
 }
