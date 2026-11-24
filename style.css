@@ -233,3 +233,4 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 #algae-chat-log .from-player { color: #a4ecc0; }
 #algae-model-status { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
 #algae-model-status:empty { display: none; }
+#algae-chat-actions[hidden] { display: none; }

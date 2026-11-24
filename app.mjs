@@ -770,6 +770,7 @@ function openCellMenu(index) {
             };
             gameStatus.textContent = messages[action] ?? 'Клетка построена';
             updateGameControls();
+            if (algaeChat.open) updateChatRecipient();
             draw();
             updateReadout();
             cellMenu.close();
@@ -872,7 +873,7 @@ function openAlgaeChat(index) {
     chatIndex = index;
     algaeChatInput.value = '';
     algaeModelStatus.textContent = '';
-    algaeChatTitle.textContent = `Водоросль · род ${chatFamily}`;
+    updateChatRecipient();
     renderedChat = '';
     chatCanClick = false;
     algaeChat.showModal();
@@ -905,7 +906,54 @@ algaeChat.addEventListener('click', event => {
 const algaeModelStatus = document.querySelector('#algae-model-status');
 const algaeChatTopics = new Map();
 
+function isPlayerFamily(family) {
+    return simulation.survival?.family === family || simulation.manualFamilies.has(family);
+}
+
+function updateChatRecipient() {
+    if (chatFamily === null) return;
+    const own = chatFamily === simulation.survival?.family;
+    const human = isPlayerFamily(chatFamily);
+    algaeChatTitle.textContent = `${own ? 'Твой род' : human ? 'Игрок · род' : 'Водоросль · род'} ${chatFamily}`;
+    algaeChatActions.hidden = human;
+}
+
+function deliverPlayerChat(from, to, text) {
+    if (to === simulation.survival?.family) {
+        const cell = Array.from(simulation.cells.values()).find(candidate => candidate.colony.family === from);
+        recordAlgaeReply(from, text, cell?.index);
+        gameStatus.textContent = `Сообщение от игрока · род ${from}`;
+        return true;
+    }
+    for (const [connection, guest] of roomGuests) {
+        if (guest.family === to && !guest.lost && connection.open) {
+            connection.send({ kind: 'player-chat', from, text });
+            return true;
+        }
+    }
+    return false;
+}
+
 function sendAlgaeMessage(label) {
+    updateChatRecipient();
+    algaeModelStatus.textContent = '';
+    if (isPlayerFamily(chatFamily)) {
+        const from = simulation.survival?.family;
+        if (from !== chatFamily) {
+            if (from === undefined) {
+                algaeModelStatus.textContent = 'Сначала выбери свою водоросль';
+                return;
+            }
+            if (roomPeer && !roomHost && hostConnection?.open) {
+                hostConnection.send({ kind: 'player-chat', to: chatFamily, text: label });
+            } else if (!roomHost || !deliverPlayerChat(from, chatFamily, label)) {
+                algaeModelStatus.textContent = 'Игрок недоступен';
+                return;
+            }
+        }
+        recordAlgaeReply(chatFamily, label, chatIndex, true);
+        return;
+    }
     const context = simulation.algaeChatContext(chatFamily, chatIndex);
     if (!simulation.aiEnabled || !context) {
         algaeModelStatus.textContent = simulation.aiEnabled ? 'Выбранная клетка исчезла' : 'Включи «ИИ водорослей»';
@@ -1654,6 +1702,14 @@ function receiveGuest(connection, packet) {
     const guest = roomGuests.get(connection);
     if (!guest) return;
     if (guest.lost) return;
+    if (packet?.kind === 'player-chat') {
+        if (!Number.isSafeInteger(packet.to) || typeof packet.text !== 'string'
+                || packet.text.length > 160 || !packet.text.trim() || packet.to === guest.family) return;
+        if (!deliverPlayerChat(guest.family, packet.to, packet.text)) {
+            connection.send({ kind: 'result', error: 'Игрок недоступен' });
+        }
+        return;
+    }
     if (packet?.kind === 'autoDonate') {
         guest.autoDonate = packet.enabled === true;
         return;
@@ -1682,7 +1738,9 @@ async function broadcastRoom(now) {
         for (const [connection, guest] of roomGuests) {
             if (!connection.open || connection.bufferSize > 2) continue;
             guest.lost ||= !simulation.families.has(guest.family);
-            connection.send({ kind: 'state', payload, guest, speed: speed.value, sequence: now });
+            const players = [...simulation.manualFamilies];
+            if (simulation.survival && !simulation.survival.lost) players.push(simulation.survival.family);
+            connection.send({ kind: 'state', payload, guest, players, speed: speed.value, sequence: now });
         }
     } catch {
         showServerStatus('Не удалось отправить состояние карты');
@@ -1698,6 +1756,11 @@ async function receiveHost(connection, packet) {
         showVersionMismatch(packet.version, connection);
     } else if (packet?.kind === 'accepted') {
         showServerStatus(`Подключено к серверу ${roomCode}`);
+    } else if (packet?.kind === 'player-chat' && Number.isSafeInteger(packet.from)
+            && typeof packet.text === 'string' && packet.text.length <= 160) {
+        const sender = Array.from(simulation.cells.values()).find(cell => cell.colony.family === packet.from);
+        recordAlgaeReply(packet.from, packet.text, sender?.index);
+        gameStatus.textContent = `Сообщение от игрока · род ${packet.from}`;
     } else if (packet?.kind === 'result') {
         gameStatus.textContent = packet.error || 'Действие выполнено';
     } else if (packet?.kind === 'state') {
@@ -1707,6 +1770,7 @@ async function receiveHost(connection, packet) {
             if (connection !== hostConnection || packet.sequence <= receivedSnapshot) return;
             const world = Simulation.fromSave(save, Math.random, recordDeath);
             world.survival = packet.guest;
+            world.manualFamilies = new Set(Array.isArray(packet.players) ? packet.players.filter(Number.isSafeInteger) : []);
             if (world.width !== simulation.width) configureWorldCanvas(world);
             simulation = world;
             receivedSnapshot = packet.sequence;
