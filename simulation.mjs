@@ -153,6 +153,9 @@ export class Simulation {
         this.colonies = new Map();
         this.families = new Set();
         this.manualFamilies = new Set();
+        this.aiEnabled = false;
+        this.familySizes = new Map();
+        this.familySignals = new Map();
         this.impactThisTick = false;
         this.tickCells = null;
         this.tickDaylight = null;
@@ -364,7 +367,7 @@ export class Simulation {
         return {
             version: 1, width: this.width, limits: this.limits, time: this.time,
             totalSeeds: this.totalSeeds, mutations: this.mutations, overloads: this.overloads,
-            survival: this.survival,
+            survival: this.survival, aiEnabled: this.aiEnabled,
             energy: Array.from(this.energy), organic: Array.from(this.organic), radiation: Array.from(this.radiation),
             colonies: Array.from(this.colonies.values()), cells: serialize(this.cells), parasites: serialize(this.parasites)
         };
@@ -394,6 +397,7 @@ export class Simulation {
         }
         for (const key of ['time', 'totalSeeds', 'mutations', 'overloads', 'survival']) world[key] = save[key];
         world.pruneColonies();
+        world.setAdaptiveAI(save.aiEnabled === true);
         return world;
     }
 
@@ -780,9 +784,16 @@ export class Simulation {
         const forward = this.cells.get(this.wrappedIndex(x + dx, y + dy));
         const supported = forward?.type === 'channel' && forward.colony.family === cell.colony.family;
         const turns = this.random() < 0.5 ? [1, 3] : [3, 1];
-        for (const turn of turns) {
+        const candidates = turns.map(turn => {
             const [sx, sy] = DIRECTIONS[(direction + turn) % DIRECTIONS.length];
             const site = this.wrappedIndex(x + sx + (supported ? dx : 0), y + sy + (supported ? dy : 0));
+            return { turn, site };
+        });
+        if (this.aiEnabled) {
+            for (const candidate of candidates) candidate.score = this.aiGrowthScore(candidate.site, cell.colony.family, false);
+            candidates.sort((a, b) => b.score - a.score);
+        }
+        for (const { turn, site } of candidates) {
             if (this.cells.has(site) || !this.isSeedSiteSafe(site)) continue;
             this.seed(site % this.width, Math.floor(site / this.width), cell.colony, cost, 'standard', turn);
             cell.energy -= cost.energy;
@@ -864,6 +875,47 @@ export class Simulation {
         cell.gene++;
     }
 
+    setAdaptiveAI(enabled) {
+        this.aiEnabled = enabled;
+        this.familySignals.clear();
+        this.familySizes.clear();
+        if (enabled) this.countAiFamilies();
+    }
+
+    countAiFamilies() {
+        this.familySizes.clear();
+        for (const collection of [this.cells, this.parasites]) {
+            for (const { colony } of collection.values()) {
+                this.familySizes.set(colony.family, (this.familySizes.get(colony.family) ?? 0) + 1);
+            }
+        }
+        for (const [family, until] of this.familySignals) {
+            if (!this.familySizes.has(family) || until <= this.time) this.familySignals.delete(family);
+        }
+    }
+
+    aiGrowthScore(index, family, aggressive) {
+        const size = this.familySizes.get(family) ?? 1;
+        let score = this.isSeedSiteSafe(index) ? 0 : -100;
+        score += Math.min(this.energy[index], 1000) / 1000;
+        score += Math.min(this.organic[index], 1000) / 1000;
+        score -= Math.min(this.radiation[index], 1000) / 250;
+        for (const site of this.neighbors(index)) {
+            const rival = this.cells.get(site)?.colony.family;
+            if (rival === undefined || rival === family) continue;
+            const rivalSize = this.familySizes.get(rival) ?? 1;
+            if (rivalSize > size) {
+                // A border channel broadcasts an alarm for nearby families to read.
+                this.familySignals.set(family, this.time + 4);
+                score -= 3 + Math.min(3, rivalSize / size);
+            } else {
+                const wary = (this.familySignals.get(rival) ?? 0) > this.time;
+                score += aggressive ? (wary ? 3 : 2) : (wary ? 0 : -1);
+            }
+        }
+        return score;
+    }
+
     grow(cell) {
         if (cell.colony.family === this.survival?.family || this.manualFamilies.has(cell.colony.family) || cell.colony.thirsty) return;
         const command = cell.colony.genome[cell.gene % cell.colony.genome.length];
@@ -877,14 +929,18 @@ export class Simulation {
         const requirements = type === 'seed' ? cell.colony.seedNeeds : cost;
         const ordered = neighbors.slice(direction).concat(neighbors.slice(0, direction));
         const biting = Boolean(TOOTH_RESOURCE[type]);
+        if (this.aiEnabled) {
+            const scores = new Map(ordered.map(index => [index, this.aiGrowthScore(index, cell.colony.family, biting)]));
+            ordered.sort((a, b) => scores.get(b) - scores.get(a));
+        }
         const host = biting ? this.findToothHost(ordered, cell.colony.family) : null;
         let index;
         if (type === 'seed') {
-            const candidates = neighbors.filter(candidate => {
+            const candidates = (this.aiEnabled ? ordered : neighbors).filter(candidate => {
                 const target = this.cells.get(candidate);
                 return target?.colony.family !== cell.colony.family && this.isSeedSiteSafe(candidate);
             });
-            if (candidates.length) index = candidates[Math.floor(this.random() * candidates.length)];
+            if (candidates.length) index = this.aiEnabled ? candidates[0] : candidates[Math.floor(this.random() * candidates.length)];
         } else {
             index = host?.index ?? (seekRadiation ? this.radiationGrowthSite(ordered, requiresRadiation) : ordered.find(candidate => {
                 if (this.cells.has(candidate)) return false;
@@ -914,7 +970,9 @@ export class Simulation {
         if (type === 'seed') {
             this.launchSeedAt(index, cell, SEED_COST);
         } else {
-            const childType = type === 'adaptive' ? this.adaptiveCollector(index) : type;
+            const resourceCollector = type === 'energy' || type === 'organic';
+            const childType = type === 'adaptive' || (this.aiEnabled && resourceCollector)
+                ? this.adaptiveCollector(index) : type;
             this.buildGrowthCell(cell, index, childType, cost, host, branchStep);
         }
         cell.gene++;
@@ -1131,6 +1189,7 @@ export class Simulation {
         const needsColonyCleanup = this.tickCells === null;
         this.prepareTick(daylight);
         const existing = this.tickCells;
+        if (this.aiEnabled && tickNumber % 20 === 0) this.countAiFamilies();
         for (const colony of this.colonies.values()) {
             colony.organicReserve = 0;
             colony.reserveCells = 0;

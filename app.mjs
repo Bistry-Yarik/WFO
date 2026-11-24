@@ -24,6 +24,7 @@ const seedRadius = document.querySelector('#seed-radius');
 const mapTool = document.querySelector('#map-tool');
 const survivalMode = document.querySelector('#survival-mode');
 const autoDonate = document.querySelector('#auto-donate');
+const adaptiveAI = document.querySelector('#adaptive-ai');
 const buildKeys = {
     KeyQ: 'teeth', KeyE: 'blueTeeth', KeyZ: 'channel', KeyX: 'seed',
     KeyC: 'organic', KeyV: 'energy', KeyB: 'cleaner', KeyN: 'chlorophyll',
@@ -1183,6 +1184,8 @@ function updateGameControls() {
     const survival = simulation.survival;
     const guest = roomPeer && !roomHost;
     speed.disabled = Boolean(guest);
+    adaptiveAI.disabled = Boolean(guest);
+    adaptiveAI.setAttribute('aria-pressed', String(simulation.aiEnabled));
     survivalMode.disabled = Boolean(guest);
     possessButton.hidden = !roomHost;
     document.querySelector('#reset').disabled = Boolean(roomPeer);
@@ -1211,6 +1214,7 @@ function restart(width, survival = Boolean(simulation.survival)) {
         fieldWidth.reportValidity();
         return;
     }
+    nextSimulation.setAdaptiveAI(simulation.aiEnabled);
     const start = survival ? nextSimulation.startSurvival() : -1;
     applyGame(nextSimulation);
     setPaused(false);
@@ -1234,6 +1238,11 @@ function restart(width, survival = Boolean(simulation.survival)) {
     updateReadout();
 }
 
+adaptiveAI.addEventListener('click', () => {
+    simulation.setAdaptiveAI(!simulation.aiEnabled);
+    updateGameControls();
+    gameStatus.textContent = simulation.aiEnabled ? 'Адаптивный ИИ включён' : 'Адаптивный ИИ выключен';
+});
 autoDonate.addEventListener('click', () => {
     simulation.survival.autoDonate = !simulation.survival.autoDonate;
     if (roomPeer && !roomHost) hostConnection?.send({ kind: 'autoDonate', enabled: simulation.survival.autoDonate });

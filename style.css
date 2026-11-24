@@ -188,7 +188,7 @@ i { flex: none; display: inline-block; width: 10px; height: 10px; background: #d
 .toolbar #sound-status { width: 10em; }
 .toolbar #pause { width: 8.5em; }
 .toolbar #fullscreen { width: 13em; }
-#auto-donate[aria-pressed="true"] { background: #306443; }
+#auto-donate[aria-pressed="true"], #adaptive-ai[aria-pressed="true"] { background: #306443; }
 
 #save-library, #server-dialog {
     width: min(440px, calc(100vw - 24px));
